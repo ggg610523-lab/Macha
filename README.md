@@ -71,4 +71,5 @@ Credit is also due to the projects this work builds on:
   for the macOS compatibility layer vendored under `darling/`.
 - The **Mayonnaise** toolkit authors, for the windowing front end vendored
   under `deps/mayonnaise/`.
+- **Reef**, for the work and ideas this tree builds upon.
 - The maintainers of the compilers, C library and graphics stack it runs on.
