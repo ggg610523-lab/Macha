@@ -1,0 +1,33 @@
+add_executable(mayonnaise_tests test_main.cpp test_geometry.cpp test_text.cpp test_layout.cpp test_events.cpp test_widgets.cpp test_images.cpp test_settings.cpp test_fonts.cpp test_actions.cpp)
+target_link_libraries(mayonnaise_tests PRIVATE mayonnaise::mayonnaise doctest::doctest mayonnaise_stb)
+# The library already compiles stb_image_write's implementation; tests only use the declarations.
+target_include_directories(mayonnaise_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+mayonnaise_set_warnings(mayonnaise_tests)
+# doctest's registration macros use __COUNTER__, which recent Clang flags under -Wpedantic.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-Wno-c2y-extensions MAYONNAISE_HAS_WNO_C2Y)
+if(MAYONNAISE_HAS_WNO_C2Y)
+  target_compile_options(mayonnaise_tests PRIVATE -Wno-c2y-extensions)
+endif()
+mayonnaise_set_sanitizers(mayonnaise_tests)
+# The terminal example's emulation core has no UI dependencies; test it with the library.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_sources(mayonnaise_tests PRIVATE test_terminal_screen.cpp ${PROJECT_SOURCE_DIR}/applications/terminal/screen.cpp)
+  target_include_directories(mayonnaise_tests PRIVATE ${PROJECT_SOURCE_DIR}/applications/terminal)
+endif()
+# So is the calculator's arithmetic.
+target_sources(mayonnaise_tests PRIVATE test_calculator_engine.cpp ${PROJECT_SOURCE_DIR}/applications/calculator/engine.cpp)
+target_include_directories(mayonnaise_tests PRIVATE ${PROJECT_SOURCE_DIR}/applications/calculator)
+# The System Settings example's KConfig reader/writer (KDE support) needs GIO, like the app.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  pkg_check_modules(MAYO_TEST_GIO IMPORTED_TARGET gio-2.0 gio-unix-2.0)
+  if(MAYO_TEST_GIO_FOUND)
+    set(SETTINGS_DIR ${PROJECT_SOURCE_DIR}/applications/system_settings)
+    target_sources(mayonnaise_tests PRIVATE test_kconfig.cpp ${SETTINGS_DIR}/kconfig.cpp ${SETTINGS_DIR}/glib_support.cpp
+                   ${SETTINGS_DIR}/ui.cpp)
+    target_include_directories(mayonnaise_tests PRIVATE ${SETTINGS_DIR})
+    target_link_libraries(mayonnaise_tests PRIVATE PkgConfig::MAYO_TEST_GIO)
+  endif()
+endif()
+add_test(NAME mayonnaise_tests COMMAND mayonnaise_tests)

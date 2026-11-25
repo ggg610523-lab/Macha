@@ -1,0 +1,285 @@
+#define _GNU_SOURCE
+#include "engine.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Classic 5x7 column font, bit 0 = top row.  One entry per printable ASCII
+ * character from 0x20 to 0x7e. */
+static const unsigned char font5x7[95][5] = {
+    { 0x00, 0x00, 0x00, 0x00, 0x00 }, /*   */
+    { 0x00, 0x00, 0x5f, 0x00, 0x00 }, /* ! */
+    { 0x00, 0x07, 0x00, 0x07, 0x00 }, /* " */
+    { 0x14, 0x7f, 0x14, 0x7f, 0x14 }, /* # */
+    { 0x24, 0x2a, 0x7f, 0x2a, 0x12 }, /* $ */
+    { 0x23, 0x13, 0x08, 0x64, 0x62 }, /* % */
+    { 0x36, 0x49, 0x55, 0x22, 0x50 }, /* & */
+    { 0x00, 0x05, 0x03, 0x00, 0x00 }, /* ' */
+    { 0x00, 0x1c, 0x22, 0x41, 0x00 }, /* ( */
+    { 0x00, 0x41, 0x22, 0x1c, 0x00 }, /* ) */
+    { 0x08, 0x2a, 0x1c, 0x2a, 0x08 }, /* * */
+    { 0x08, 0x08, 0x3e, 0x08, 0x08 }, /* + */
+    { 0x00, 0x50, 0x30, 0x00, 0x00 }, /* , */
+    { 0x08, 0x08, 0x08, 0x08, 0x08 }, /* - */
+    { 0x00, 0x60, 0x60, 0x00, 0x00 }, /* . */
+    { 0x20, 0x10, 0x08, 0x04, 0x02 }, /* / */
+    { 0x3e, 0x51, 0x49, 0x45, 0x3e }, /* 0 */
+    { 0x00, 0x42, 0x7f, 0x40, 0x00 }, /* 1 */
+    { 0x42, 0x61, 0x51, 0x49, 0x46 }, /* 2 */
+    { 0x21, 0x41, 0x45, 0x4b, 0x31 }, /* 3 */
+    { 0x18, 0x14, 0x12, 0x7f, 0x10 }, /* 4 */
+    { 0x27, 0x45, 0x45, 0x45, 0x39 }, /* 5 */
+    { 0x3c, 0x4a, 0x49, 0x49, 0x30 }, /* 6 */
+    { 0x01, 0x71, 0x09, 0x05, 0x03 }, /* 7 */
+    { 0x36, 0x49, 0x49, 0x49, 0x36 }, /* 8 */
+    { 0x06, 0x49, 0x49, 0x29, 0x1e }, /* 9 */
+    { 0x00, 0x36, 0x36, 0x00, 0x00 }, /* : */
+    { 0x00, 0x56, 0x36, 0x00, 0x00 }, /* ; */
+    { 0x00, 0x08, 0x14, 0x22, 0x41 }, /* < */
+    { 0x14, 0x14, 0x14, 0x14, 0x14 }, /* = */
+    { 0x41, 0x22, 0x14, 0x08, 0x00 }, /* > */
+    { 0x02, 0x01, 0x51, 0x09, 0x06 }, /* ? */
+    { 0x32, 0x49, 0x79, 0x41, 0x3e }, /* @ */
+    { 0x7e, 0x11, 0x11, 0x11, 0x7e }, /* A */
+    { 0x7f, 0x49, 0x49, 0x49, 0x36 }, /* B */
+    { 0x3e, 0x41, 0x41, 0x41, 0x22 }, /* C */
+    { 0x7f, 0x41, 0x41, 0x22, 0x1c }, /* D */
+    { 0x7f, 0x49, 0x49, 0x49, 0x41 }, /* E */
+    { 0x7f, 0x09, 0x09, 0x09, 0x01 }, /* F */
+    { 0x3e, 0x41, 0x49, 0x49, 0x7a }, /* G */
+    { 0x7f, 0x08, 0x08, 0x08, 0x7f }, /* H */
+    { 0x00, 0x41, 0x7f, 0x41, 0x00 }, /* I */
+    { 0x20, 0x40, 0x41, 0x3f, 0x01 }, /* J */
+    { 0x7f, 0x08, 0x14, 0x22, 0x41 }, /* K */
+    { 0x7f, 0x40, 0x40, 0x40, 0x40 }, /* L */
+    { 0x7f, 0x02, 0x0c, 0x02, 0x7f }, /* M */
+    { 0x7f, 0x04, 0x08, 0x10, 0x7f }, /* N */
+    { 0x3e, 0x41, 0x41, 0x41, 0x3e }, /* O */
+    { 0x7f, 0x09, 0x09, 0x09, 0x06 }, /* P */
+    { 0x3e, 0x41, 0x51, 0x21, 0x5e }, /* Q */
+    { 0x7f, 0x09, 0x19, 0x29, 0x46 }, /* R */
+    { 0x46, 0x49, 0x49, 0x49, 0x31 }, /* S */
+    { 0x01, 0x01, 0x7f, 0x01, 0x01 }, /* T */
+    { 0x3f, 0x40, 0x40, 0x40, 0x3f }, /* U */
+    { 0x1f, 0x20, 0x40, 0x20, 0x1f }, /* V */
+    { 0x7f, 0x20, 0x18, 0x20, 0x7f }, /* W */
+    { 0x63, 0x14, 0x08, 0x14, 0x63 }, /* X */
+    { 0x07, 0x08, 0x70, 0x08, 0x07 }, /* Y */
+    { 0x61, 0x51, 0x49, 0x45, 0x43 }, /* Z */
+    { 0x00, 0x7f, 0x41, 0x41, 0x00 }, /* [ */
+    { 0x02, 0x04, 0x08, 0x10, 0x20 }, /* \ */
+    { 0x00, 0x41, 0x41, 0x7f, 0x00 }, /* ] */
+    { 0x04, 0x02, 0x01, 0x02, 0x04 }, /* ^ */
+    { 0x40, 0x40, 0x40, 0x40, 0x40 }, /* _ */
+    { 0x00, 0x01, 0x02, 0x04, 0x00 }, /* ` */
+    { 0x20, 0x54, 0x54, 0x54, 0x78 }, /* a */
+    { 0x7f, 0x48, 0x44, 0x44, 0x38 }, /* b */
+    { 0x38, 0x44, 0x44, 0x44, 0x20 }, /* c */
+    { 0x38, 0x44, 0x44, 0x48, 0x7f }, /* d */
+    { 0x38, 0x54, 0x54, 0x54, 0x18 }, /* e */
+    { 0x08, 0x7e, 0x09, 0x01, 0x02 }, /* f */
+    { 0x0c, 0x52, 0x52, 0x52, 0x3e }, /* g */
+    { 0x7f, 0x08, 0x04, 0x04, 0x78 }, /* h */
+    { 0x00, 0x44, 0x7d, 0x40, 0x00 }, /* i */
+    { 0x20, 0x40, 0x44, 0x3d, 0x00 }, /* j */
+    { 0x7f, 0x10, 0x28, 0x44, 0x00 }, /* k */
+    { 0x00, 0x41, 0x7f, 0x40, 0x00 }, /* l */
+    { 0x7c, 0x04, 0x18, 0x04, 0x78 }, /* m */
+    { 0x7c, 0x08, 0x04, 0x04, 0x78 }, /* n */
+    { 0x38, 0x44, 0x44, 0x44, 0x38 }, /* o */
+    { 0x7c, 0x14, 0x14, 0x14, 0x08 }, /* p */
+    { 0x08, 0x14, 0x14, 0x18, 0x7c }, /* q */
+    { 0x7c, 0x08, 0x04, 0x04, 0x08 }, /* r */
+    { 0x48, 0x54, 0x54, 0x54, 0x20 }, /* s */
+    { 0x04, 0x3f, 0x44, 0x40, 0x20 }, /* t */
+    { 0x3c, 0x40, 0x40, 0x20, 0x7c }, /* u */
+    { 0x1c, 0x20, 0x40, 0x20, 0x1c }, /* v */
+    { 0x3c, 0x40, 0x30, 0x40, 0x3c }, /* w */
+    { 0x44, 0x28, 0x10, 0x28, 0x44 }, /* x */
+    { 0x0c, 0x50, 0x50, 0x50, 0x3c }, /* y */
+    { 0x44, 0x64, 0x54, 0x4c, 0x44 }, /* z */
+    { 0x00, 0x08, 0x36, 0x41, 0x00 }, /* { */
+    { 0x00, 0x00, 0x7f, 0x00, 0x00 }, /* | */
+    { 0x00, 0x41, 0x36, 0x08, 0x00 }, /* } */
+    { 0x08, 0x04, 0x08, 0x10, 0x08 }, /* ~ */
+};
+
+sw_font sw_font_system(double size)
+{
+    sw_font font = { size, 400, 0 };
+    return font;
+}
+
+sw_font sw_font_semibold(double size)
+{
+    sw_font font = { size, 600, 0 };
+    return font;
+}
+
+sw_font sw_font_bold(double size)
+{
+    sw_font font = { size, 700, 0 };
+    return font;
+}
+
+sw_font sw_font_mono(double size)
+{
+    sw_font font = { size, 400, 1 };
+    return font;
+}
+
+static int glyph_scale(const sw_font *font)
+{
+    double size = font && font->size > 0.0 ? font->size : 16.0;
+    int scale = (int)(size / 8.0 + 0.5);
+    if (scale < 1)
+        scale = 1;
+    if (scale > 10)
+        scale = 10;
+    return scale;
+}
+
+double sw_text_advance(const sw_font *font)
+{
+    return 6.0 * glyph_scale(font);
+}
+
+double sw_text_line_height(const sw_font *font)
+{
+    return 10.0 * glyph_scale(font);
+}
+
+double sw_text_width(const sw_font *font, const char *text)
+{
+    if (!text)
+        return 0.0;
+    double advance = sw_text_advance(font);
+    double best = 0.0;
+    double current = 0.0;
+    for (const char *p = text; *p; p++) {
+        if (*p == '\n') {
+            if (current > best)
+                best = current;
+            current = 0.0;
+        } else {
+            current += advance;
+        }
+    }
+    return current > best ? current : best;
+}
+
+/* Pull one wrapped line out of *cursor.  Returns 0 at end of text. */
+static int next_line(const char **cursor, const sw_font *font, double max_width,
+                     char *out, size_t out_size, double *out_width)
+{
+    const char *p = *cursor;
+    if (!p || !*p)
+        return 0;
+
+    double advance = sw_text_advance(font);
+    size_t n = 0;
+    double width = 0.0;
+    size_t last_space = (size_t)-1;
+    double width_at_space = 0.0;
+
+    while (*p && *p != '\n') {
+        if (!isnan(max_width) && width + advance > max_width && n > 0)
+            break;
+        if (n + 1 >= out_size)
+            break;
+        if (*p == ' ') {
+            last_space = n;
+            width_at_space = width;
+        }
+        out[n++] = *p++;
+        width += advance;
+    }
+
+    if (*p == '\n') {
+        p++;
+    } else if (*p && last_space != (size_t)-1 && last_space > 0) {
+        size_t consumed = n;
+        n = last_space;
+        p -= (consumed - last_space);
+        while (*p == ' ')
+            p++;
+        width = width_at_space;
+    }
+
+    while (n > 0 && out[n - 1] == ' ')
+        n--;
+    out[n] = 0;
+    *cursor = p;
+    if (out_width)
+        *out_width = width;
+    return 1;
+}
+
+void sw_text_measure(const sw_font *font, const char *text, double max_width,
+                     double *out_width, double *out_height, int *out_lines)
+{
+    char buffer[1024];
+    const char *cursor = text ? text : "";
+    double best = 0.0;
+    int lines = 0;
+
+    while (next_line(&cursor, font, max_width, buffer, sizeof(buffer), NULL)) {
+        double width = sw_text_width(font, buffer);
+        if (width > best)
+            best = width;
+        lines++;
+        if (lines > 8192)
+            break;
+    }
+
+    if (lines == 0)
+        lines = 1;
+    if (out_width)
+        *out_width = best;
+    if (out_height)
+        *out_height = lines * sw_text_line_height(font);
+    if (out_lines)
+        *out_lines = lines;
+}
+
+void sw_canvas_draw_text(sw_canvas *canvas, const sw_font *font,
+                         const char *text, double x, double y, double max_width,
+                         sw_color color)
+{
+    if (!canvas || !text || color.a <= 0.0)
+        return;
+
+    int scale = glyph_scale(font);
+    double line_height = sw_text_line_height(font);
+    double advance = sw_text_advance(font);
+    char buffer[1024];
+    const char *cursor = text;
+    int line = 0;
+
+    while (next_line(&cursor, font, max_width, buffer, sizeof(buffer), NULL)) {
+        double pen = x;
+        for (const char *p = buffer; *p; p++) {
+            unsigned char ch = (unsigned char)*p;
+            if (ch < 0x20 || ch > 0x7e)
+                ch = '?';
+            const unsigned char *glyph = font5x7[ch - 0x20];
+            double top = y + line * line_height;
+            for (int column = 0; column < 5; column++) {
+                unsigned bits = glyph[column];
+                for (int row = 0; row < 7; row++) {
+                    if (!(bits & (1u << row)))
+                        continue;
+                    sw_canvas_fill_rect(canvas, pen + column * scale,
+                                        top + row * scale, scale, scale, color);
+                    if (font->weight >= 600)
+                        sw_canvas_fill_rect(canvas,
+                                            pen + column * scale + scale,
+                                            top + row * scale, 1, scale, color);
+                }
+            }
+            pen += advance;
+        }
+        line++;
+    }
+}
