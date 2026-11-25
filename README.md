@@ -58,3 +58,17 @@ without it.
 `runner/`, the `appexec/tests` and `cleanroom/tests` suites, and the
 `scripts/` launchers expect an extracted macOS application/runtime on the host
 (and a compositor); they are source, not part of the default build.
+
+## Special thanks
+
+Special thanks to **Alexandru Balan**, and to everyone else who helped along
+the way — this tree would not exist without their support and contributions.
+
+Credit is also due to the projects this work builds on:
+
+- The **Darling** project and its contributors — Lubos Dolezel, Wenqi Chen,
+  Sergey Bugaev, Andrew Hyatt, Chris Wulff and the wider Darling community —
+  for the macOS compatibility layer vendored under `darling/`.
+- The **Mayonnaise** toolkit authors, for the windowing front end vendored
+  under `deps/mayonnaise/`.
+- The maintainers of the compilers, C library and graphics stack it runs on.
