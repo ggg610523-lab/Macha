@@ -1,0 +1,299 @@
+/*
+ This file is part of Darling.
+
+ Copyright (C) 2019-2020 Lubos Dolezel
+
+ Darling is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Darling is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <getopt.h>
+#include <stdbool.h>
+
+#import <Foundation/NSArray.h>
+#import <Foundation/NSString.h>
+#import <Foundation/NSURL.h>
+#import <AppKit/NSWorkspace.h>
+#include <CoreServices/CoreServices.h>
+
+static void usage(void);
+
+int main(int argc, char *argv[])
+{
+	bool fresh = false;
+	bool reveal = false;
+	bool wait = false;
+	bool _new = false;
+	bool hide = false;
+	bool background = false;
+	bool header = false;
+	bool useDefTextEditor = false;
+	bool readStdin = false;
+
+	const char* sdk = NULL;
+	const char* bundle = NULL;
+	const char* appname = NULL;
+	NSArray<NSString*>* arguments = nil;
+	NSArray<NSURL*>* filenames = nil;
+	FSRef fsref;
+	bool hasFSRef = false;
+	CFURLRef appURL = NULL;
+
+	for (int i = 1; i < argc; i++)
+	{
+		if (strcmp(argv[i], "--args") == 0)
+		{
+			int count = argc-i-1;
+			NSString** strings = (NSString**) malloc(count * sizeof(NSString*));
+
+			for (int j = 0; j < count; j++)
+				strings[j] = [NSString stringWithCString: argv[j+i+1] encoding: NSUTF8StringEncoding];
+
+			arguments = [NSArray arrayWithObjects: strings count: count];
+			free(strings);
+			
+			argv[i] = NULL;
+			argc = i;
+			break;
+		}
+	}
+
+	while (true)
+	{
+		static struct option long_options[] = {
+			{ "fresh", no_argument, 0, 'F' },
+			{ "reveal", no_argument, 0, 'R' },
+			{ "wait-apps", no_argument, 0, 'W' },
+			{ "new", no_argument, 0, 'n' },
+			{ "hide", no_argument, 0, 'j' },
+			{ "background", no_argument, 0, 'g' },
+			{ "header", no_argument, 0, 'h' },
+			{ NULL, 0, 0, 0 }
+		};
+		int c = getopt_long(argc, argv, "a:b:etfFRWnjghs:", long_options, NULL);
+
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+			case 'a':
+				appname = optarg;
+				break;
+			case 'b':
+				bundle = optarg;
+				break;
+			case 'e':
+				bundle = "com.apple.TextEdit";
+				break;
+			case 't':
+				useDefTextEditor = true;
+				break;
+			case 'f':
+				readStdin = true;
+				break;
+			case 'F':
+				fresh = true;
+				break;
+			case 'R':
+				reveal = true;
+				break;
+			case 'W':
+				wait = true;
+				break;
+			case 'n':
+				_new = true;
+				break;
+			case 'j':
+				hide = true;
+				break;
+			case 'g':
+				background = true;
+				break;
+			case 'h':
+				header = true;
+				break;
+			case 's':
+				sdk = optarg;
+				break;
+			default:
+				usage();
+				return EXIT_FAILURE;
+		}
+	}
+
+	if (header || readStdin)
+	{
+		fprintf(stderr, "This operation is not implemented yet. Sorry.\n");
+		return EXIT_FAILURE;
+	}
+
+	if (optind < argc)
+	{
+		int count = argc - optind;
+		NSURL** urls = (NSURL**) malloc(count * sizeof(NSURL*));
+
+		for (int i = 0; i < count; i++)
+		{
+			NSString* str = [NSString stringWithCString: argv[optind+i] encoding: NSUTF8StringEncoding];
+			if (str == nil)
+			{
+				fprintf(stderr, "open: argument is not valid UTF-8: %s\n", argv[optind+i]);
+				free(urls);
+				return EXIT_FAILURE;
+			}
+
+			// An argument that names an existing file is a path even if it looks like
+			// a URL ("a:b", "localhost:80"). Otherwise +URLWithString: also accepts a
+			// bare path ("/tmp/a.txt", "a.txt") and returns a URL without a scheme, so
+			// test for the scheme instead of for nil. Anything without one is a file
+			// path, resolved against the current directory; nil (illegal URL
+			// characters such as a space) is a path too.
+			if (access(argv[optind+i], F_OK) == 0)
+				urls[i] = [NSURL fileURLWithPath: str];
+			else
+			{
+				urls[i] = [NSURL URLWithString: str];
+				if (urls[i] == nil || [urls[i] scheme] == nil)
+					urls[i] = [NSURL fileURLWithPath: str];
+			}
+		}
+		
+		filenames = [NSArray arrayWithObjects: urls count: count];
+		free(urls);
+	}
+
+	// -R: the files are revealed in the Finder instead of being opened; if one doesn't exist, nothing is revealed
+	if (reveal)
+	{
+		if ([filenames count] == 0)
+		{
+			usage();
+			return EXIT_FAILURE;
+		}
+		for (NSURL* url in filenames)
+		{
+			if (![url isFileURL] || ![[NSFileManager defaultManager] fileExistsAtPath: [url path]])
+			{
+				fprintf(stderr, "The file %s does not exist.\n", [[url isFileURL] ? [url path] : [url absoluteString] UTF8String]);
+				return EXIT_FAILURE;
+			}
+		}
+		[[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs: filenames];
+		return EXIT_SUCCESS;
+	}
+
+	OSStatus result = noErr;
+	if (useDefTextEditor)
+	{
+		result = LSGetApplicationForInfo(kLSUnknownType, kLSUnknownCreator, CFSTR("txt"), kLSRolesEditor, &fsref, &appURL);
+		hasFSRef = true;
+	}
+	else if (bundle != NULL)
+	{
+		result = LSFindApplicationForInfo(kLSUnknownCreator, (CFStringRef) [NSString stringWithCString:bundle encoding:NSUTF8StringEncoding], NULL, &fsref, &appURL);
+		hasFSRef = true;
+	}
+	else if (appname != NULL)
+	{
+		NSString* appPath = [[NSWorkspace sharedWorkspace] fullPathForApplication: [NSString stringWithCString:appname encoding:NSUTF8StringEncoding]];
+		if (appPath == nil)
+		{
+			fprintf(stderr, "Cannot find required application: %s\n", appname);
+			return EXIT_FAILURE;
+		}
+
+		appURL = (CFURLRef) CFRetain((CFURLRef)[NSURL fileURLWithPath: appPath]);
+		result = FSPathMakeRef((const UInt8*) [appPath UTF8String], &fsref, NULL);
+		hasFSRef = true;
+	}
+
+	if (result != noErr)
+	{
+		fprintf(stderr, "Cannot find required application: %d\n", result);
+		if (appURL)
+			CFRelease(appURL);
+		return EXIT_FAILURE;
+	}
+
+	NSArray<NSURL*>* urlsToOpen;
+	LSApplicationParameters params;
+
+	memset(&params, 0, sizeof(params));
+
+	if (hasFSRef)
+		params.application = &fsref;
+	params.argv = (CFArrayRef) arguments;
+
+	if (_new)
+		params.flags |= kLSLaunchNewInstance;
+	if (background)
+		params.flags |= kLSLaunchDontSwitch;
+	if (hide)
+		params.flags |= kLSLaunchAndHide;
+
+	if (filenames)
+	{
+		urlsToOpen = filenames;
+	}
+	else if (appURL)
+	{
+		urlsToOpen = [NSArray arrayWithObjects: (const id*) &appURL count: 1];
+	}
+	else
+	{
+		usage();
+		return EXIT_FAILURE;
+	}
+
+	// TODO: Apple Events, PSNs (for waiting)
+	result = LSOpenURLsWithRole((CFArrayRef) urlsToOpen, kLSRolesAll, NULL, &params, NULL, 0);
+
+	if (appURL)
+		CFRelease(appURL);
+
+	if (result != noErr)
+	{
+		fprintf(stderr, "Failed to launch: %d\n", result);
+		return EXIT_FAILURE;
+	}
+
+	return EXIT_SUCCESS;
+}
+
+static void usage(void)
+{
+	// Printed on stderr, as macOS does, but listing only the options this implementation acts on.
+	fprintf(stderr,
+		"Usage: open [-e] [-t] [-n] [-g] [-j] [-b <bundle identifier>] [-a <application>] [filenames] [--args arguments]\n"
+		"Help: Opens files, folders and URLs from the command line, each with its default application\n"
+		"      unless another one is chosen. An argument that is not an existing file but has a URL\n"
+		"      scheme is opened as a URL.\n"
+		"Options:\n"
+		"      -a <application>      Open with the named application.\n"
+		"      -b <bundle id>        Open with the application that has this bundle identifier.\n"
+		"      -e                    Open with TextEdit.\n"
+		"      -t                    Open with the default text editor.\n"
+		"      -n, --new             Start a new instance of the application even if one is running.\n"
+		"      -g, --background      Do not bring the application to the front.\n"
+		"      -j, --hide            Start the application hidden.\n"
+		"      --args                Pass all following arguments to the application instead of opening them.\n"
+		"Not supported yet: -f, -h (--header) and -s.\n"
+		"Accepted but without effect: -F (--fresh), -W (--wait-apps).\n");
+}

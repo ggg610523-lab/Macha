@@ -1,0 +1,68 @@
+/*
+ This file is part of Darling.
+
+ Copyright (C) 2017 Lubos Dolezel
+
+ Darling is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Darling is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#import <CoreImage/CIImage.h>
+#import <darling-stub-forwarding.h>
+
+@implementation CIImage
+
++ (CIImage *) emptyImage {
+    return [[[self alloc] initWithCGImage: NULL] autorelease];
+}
+
+- (instancetype) initWithCGImage: (CGImageRef) cgImage {
+    if ((self = [super init])) {
+        _cgImage = CGImageRetain(cgImage);
+    }
+    return self;
+}
+
+- (void) dealloc {
+    CGImageRelease(_cgImage);
+    [super dealloc];
+}
+
+/* An image with no CGImage behind it has the null extent, which is what macOS reports for
+   +[CIImage emptyImage]. Evidence: black-box observation on macOS 27 (the rectangle is
+   CGRectNull, origin at infinity with zero size). Test: tests/src/coreimage_values.m. */
+- (CGRect) extent {
+    if (_cgImage == NULL) {
+        return CGRectNull;
+    }
+
+    return CGRectMake(0, 0, CGImageGetWidth(_cgImage), CGImageGetHeight(_cgImage));
+}
+
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
+    return [super methodSignatureForSelector: aSelector] ?: DarlingStubMethodSignature(aSelector);
+}
+
+- (void)forwardInvocation:(NSInvocation *)anInvocation {
+    DarlingStubForwardInvocation(self, anInvocation);
+}
+
++ (NSMethodSignature *)methodSignatureForSelector:(SEL)aSelector {
+    return [super methodSignatureForSelector: aSelector] ?: DarlingStubMethodSignature(aSelector);
+}
+
++ (void)forwardInvocation:(NSInvocation *)anInvocation {
+    DarlingStubForwardInvocation(self, anInvocation);
+}
+
+@end

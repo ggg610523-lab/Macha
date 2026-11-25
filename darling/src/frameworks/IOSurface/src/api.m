@@ -1,0 +1,271 @@
+/*
+ This file is part of Darling.
+
+ Copyright (C) 2020 Lubos Dolezel
+
+ Darling is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Darling is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#import <IOSurface/IOSurface.h>
+#import <IOSurface/IOSurfaceObjC.h>
+#include <xpc/private/mach_send.h>
+
+@interface IOSurface (CopyingAttachments)
+- (nullable id)_copyAttachmentForKey:(NSString *)key;
+- (NSDictionary<NSString *, id> *)_copyAllAttachments;
+@end
+
+CFTypeID IOSurfaceGetTypeID(void)
+{
+	return (CFTypeID) [IOSurface self];
+}
+
+IOSurfaceRef _Nullable IOSurfaceCreate(CFDictionaryRef properties)
+{
+	return (IOSurfaceRef) [[IOSurface alloc] initWithProperties: (NSDictionary*) properties];
+}
+
+IOSurfaceRef _Nullable IOSurfaceLookup(IOSurfaceID csid)
+{
+	return (IOSurfaceRef) [[IOSurface alloc] initWithSurfaceID: csid];
+}
+
+mach_port_t IOSurfaceCreateMachPort(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer createMachPort];
+}
+
+IOSurfaceRef _Nullable IOSurfaceLookupFromMachPort(mach_port_t port)
+{
+	return (IOSurfaceRef) [[IOSurface alloc] initWithMachPort: port];
+}
+
+// The XPC object carries the surface's Mach port.
+xpc_object_t IOSurfaceCreateXPCObject(IOSurfaceRef surface)
+{
+	mach_port_t port = IOSurfaceCreateMachPort(surface);
+	if (!MACH_PORT_VALID(port))
+		return NULL;
+
+	xpc_object_t object = xpc_mach_send_create_with_disposition(port, MACH_MSG_TYPE_MOVE_SEND);
+	if (!object)
+		mach_port_deallocate(mach_task_self(), port);
+	return object;
+}
+
+IOSurfaceRef IOSurfaceLookupFromXPCObject(xpc_object_t obj)
+{
+	if (!obj || xpc_get_type(obj) != XPC_TYPE_MACH_SEND)
+		return NULL;
+	return IOSurfaceLookupFromMachPort(xpc_mach_send_get_right(obj));
+}
+
+kern_return_t IOSurfaceLock(IOSurfaceRef buffer, IOSurfaceLockOptions options, uint32_t * _Nullable seed)
+{
+	return [(IOSurface*)buffer lockWithOptions: options seed: seed];
+}
+
+kern_return_t IOSurfaceUnlock(IOSurfaceRef buffer, IOSurfaceLockOptions options, uint32_t * _Nullable seed)
+{
+	return [(IOSurface*)buffer unlockWithOptions: options seed: seed];
+}
+
+size_t IOSurfaceGetWidth(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer width];
+}
+
+size_t IOSurfaceGetHeight(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer height];
+}
+
+void *IOSurfaceGetBaseAddress(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer baseAddress];
+}
+
+OSType IOSurfaceGetPixelFormat(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer pixelFormat];
+}
+
+void IOSurfaceSetValue(IOSurfaceRef buffer, CFStringRef key, CFTypeRef value)
+{
+	return [(IOSurface*)buffer setAttachment: (id) value forKey: (NSString*) key];
+}
+
+
+CFTypeRef _Nullable IOSurfaceCopyValue(IOSurfaceRef buffer, CFStringRef key)
+{
+	return (CFTypeRef) [(IOSurface*) buffer _copyAttachmentForKey: (NSString*) key];
+}
+
+
+void IOSurfaceRemoveValue(IOSurfaceRef buffer, CFStringRef key)
+{
+	[(IOSurface*)buffer removeAttachmentForKey: (NSString*) key];
+}
+
+
+void IOSurfaceSetValues(IOSurfaceRef buffer, CFDictionaryRef keysAndValues)
+{
+	[(IOSurface*)buffer setAllAttachments: (NSDictionary*)keysAndValues];
+}
+
+
+CFDictionaryRef _Nullable IOSurfaceCopyAllValues(IOSurfaceRef buffer)
+{
+	return (CFDictionaryRef) [(IOSurface*)buffer _copyAllAttachments];
+}
+
+
+void IOSurfaceRemoveAllValues(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer removeAllAttachments];
+}
+
+size_t IOSurfaceGetBytesPerRow(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer bytesPerRow];
+}
+
+void IOSurfaceIncrementUseCount(IOSurfaceRef buffer)
+{
+	[(IOSurface*)buffer incrementUseCount];
+}
+
+
+void IOSurfaceDecrementUseCount(IOSurfaceRef buffer)
+{
+	[(IOSurface*)buffer decrementUseCount];
+}
+
+
+int32_t IOSurfaceGetUseCount(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer localUseCount];
+}
+
+size_t IOSurfaceGetPlaneCount(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer planeCount];
+}
+
+uint32_t IOSurfaceGetSeed(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer seed];
+}
+
+size_t IOSurfaceGetWidthOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer widthOfPlaneAtIndex: planeIndex];
+}
+
+
+size_t IOSurfaceGetHeightOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer heightOfPlaneAtIndex: planeIndex];
+}
+
+
+size_t IOSurfaceGetBytesPerElementOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer bytesPerElementOfPlaneAtIndex: planeIndex];
+}
+
+
+size_t IOSurfaceGetBytesPerRowOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer bytesPerRowOfPlaneAtIndex: planeIndex];
+}
+
+
+void *IOSurfaceGetBaseAddressOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer baseAddressOfPlaneAtIndex: planeIndex];
+}
+
+
+size_t IOSurfaceGetElementWidthOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer elementWidthOfPlaneAtIndex: planeIndex];
+}
+
+
+size_t IOSurfaceGetElementHeightOfPlane(IOSurfaceRef buffer, size_t planeIndex)
+{
+	return [(IOSurface*)buffer elementHeightOfPlaneAtIndex: planeIndex];
+}
+
+size_t IOSurfaceGetBytesPerElement(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer bytesPerElementOfPlaneAtIndex: 0];
+}
+
+
+size_t IOSurfaceGetElementWidth(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer elementWidthOfPlaneAtIndex: 0];
+}
+
+
+size_t IOSurfaceGetElementHeight(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer elementHeightOfPlaneAtIndex: 0];
+}
+
+size_t IOSurfaceGetAllocSize(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer allocationSize];
+}
+
+// Darling's allocation constraints, not values taken from macOS: rows and
+// planes start on 64-byte boundaries and allocations are whole pages.
+size_t IOSurfaceGetPropertyAlignment(CFStringRef property)
+{
+	if (!property)
+		return 1;
+	if (CFEqual(property, kIOSurfaceAllocSize))
+		return 4096;
+	if (CFEqual(property, kIOSurfaceBytesPerRow) || CFEqual(property, kIOSurfacePlaneBytesPerRow)
+		|| CFEqual(property, kIOSurfacePlaneOffset) || CFEqual(property, kIOSurfacePlaneSize)
+		|| CFEqual(property, kIOSurfaceOffset))
+		return 64;
+	return 1;
+}
+
+// Rounds value up to the alignment of property. Returns 0 if that overflows.
+size_t IOSurfaceAlignProperty(CFStringRef property, size_t value)
+{
+	size_t alignment = IOSurfaceGetPropertyAlignment(property);
+	if (value > SIZE_MAX - (alignment - 1))
+		return 0;
+	return (value + alignment - 1) / alignment * alignment;
+}
+
+Boolean IOSurfaceIsInUse(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer isInUse];
+}
+
+kern_return_t IOSurfaceSetPurgeable(IOSurfaceRef buffer, uint32_t newState, uint32_t * _Nullable oldState)
+{
+	return [(IOSurface*)buffer setPurgeable:newState oldState:oldState];
+}
+
+Boolean IOSurfaceAllowsPixelSizeCasting(IOSurfaceRef buffer)
+{
+	return [(IOSurface*)buffer allowsPixelSizeCasting];
+}

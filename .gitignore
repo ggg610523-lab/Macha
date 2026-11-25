@@ -1,5 +1,5 @@
 cleanroom/build/
-build/
+/build/
 deps/mayonnaise/build/
 plsr-lite/plsr-lite
 tools/reef_mtl_probe

@@ -1,0 +1,372 @@
+#include <LaunchServices/LaunchServices.h>
+#include <LaunchServices/LaunchServicesPriv.h>
+#include <CarbonCore/MacErrors.h>
+#include <unistd.h>
+#include <cstring>
+#include <string>
+#include <memory>
+#include <vector>
+#include <algorithm>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <stdio.h>
+#include <unicode/unistr.h>
+#include <CoreServices/UniChar.h>
+#include "LSDeliver.h"
+#include <os/log.h>
+
+using namespace icu;
+
+extern char** environ;
+
+namespace
+{
+    const std::string g_scXdgOpenPath = "/usr/bin/xdg-open";
+    const std::string g_scXdgMimePath = "/usr/bin/xdg-mime";
+
+    std::string launchApp(const std::string &app, const std::vector<std::string> &args, bool async = false)
+    {
+        std::string buffer;
+        char **argv = new char*[args.size()+1];
+        int index=0;
+        argv[0] = strdup(app.c_str());
+        std::for_each(std::begin(args), std::end(args), [&argv,&index](const std::string &arg)
+        {
+            argv[++index] = strdup(arg.c_str());
+        });
+        argv[++index] = 0;
+
+        int pipes[2];
+        pipe(pipes);
+
+        pid_t newPid = fork();
+
+        if (newPid == 0) {
+            if (!async) {
+                close(pipes[0]);
+                dup2(pipes[1], 1);
+                close(pipes[1]);
+            }
+            // close stdin
+            close(0);
+            execv(argv[0], reinterpret_cast<char *const*>(argv));
+            perror("Unable to launch process");
+            exit(20);
+        }
+        else if( newPid > 0 ) {
+			int status;
+
+            close(pipes[1]);
+            if (!async) {
+                char cBuffer[1024];
+
+                while(read(pipes[0], cBuffer,sizeof(cBuffer)) != 0) {
+                    buffer += cBuffer;
+                }
+                buffer +='\0';
+                wait(&status);
+            }
+        }
+        for(std::size_t i = 0;i< args.size()+1;++i){
+            free(argv[i]);
+        }
+        delete[] (argv);
+
+        return buffer;
+    }
+
+    std::string mimeForFile(const std::string &url)
+    {
+        std::vector<std::string> args {"query", "filetype",url};
+        std::string out = launchApp(g_scXdgMimePath,args);
+
+        return out;
+    }
+
+    std::string getDefaultApplication(std::string mimeType)
+    {
+        return launchApp(g_scXdgMimePath,std::vector<std::string> {"query","default", mimeType});
+    }
+}
+
+
+// in FileManager.cpp
+bool FSRefMakePath(const FSRef* ref, std::string& out);
+
+OSStatus LSInit(LSInitializeFlags flags)
+{
+	return noErr;
+}
+
+OSStatus LSTerm(void)
+{
+	return noErr;
+}
+
+static
+int execvpe(const char* name, char** argv, char** envp)
+{
+	if (!envp)
+		return execvp(name, argv);
+
+	char** orig_env;
+	int ret;
+
+	orig_env = environ;
+	environ = envp;
+
+	ret = execvp(name, argv);
+
+	environ = orig_env;
+	return ret;
+}
+
+static OSStatus resolveApplicationExecutable(std::string& exePath)
+{
+	struct stat info;
+	if (stat(exePath.c_str(), &info) != 0)
+		return makeOSStatus(errno);
+	if (!S_ISDIR(info.st_mode))
+		return noErr;
+
+	// Application FSRefs may identify bundle directories, not executable files.
+	// Let CoreFoundation handle executable names and supported bundle layouts.
+	CFURLRef bundleURL = CFURLCreateFromFileSystemRepresentation(
+		kCFAllocatorDefault, (const UInt8*) exePath.c_str(), exePath.size(), true);
+	CFBundleRef bundle = bundleURL ? CFBundleCreate(kCFAllocatorDefault, bundleURL) : nullptr;
+	CFURLRef executableURL = bundle ? CFBundleCopyExecutableURL(bundle) : nullptr;
+	UInt8 path[PATH_MAX];
+	Boolean gotPath = executableURL && CFURLGetFileSystemRepresentation(
+		executableURL, true, path, sizeof(path));
+	if (executableURL)
+		CFRelease(executableURL);
+	if (bundle)
+		CFRelease(bundle);
+	if (bundleURL)
+		CFRelease(bundleURL);
+	if (!gotPath)
+		return kLSNoExecutableErr;
+
+	exePath = (const char*) path;
+	return noErr;
+}
+
+OSStatus LSOpenApplication(const LSApplicationParameters *appParams, ProcessSerialNumber *outPSN)
+{
+	if (!appParams || !appParams->application)
+		return paramErr;
+
+	std::string exePath, bundlePath;
+	std::vector<std::string> argumentStorage;
+	std::vector<char*> argv;
+	std::unique_ptr<std::vector<char*>> envp;
+	int pipefds[2];
+	pid_t pid;
+	OSStatus rv = noErr;
+
+	if (!FSRefMakePath(appParams->application, exePath))
+		return fnfErr;
+	bundlePath = exePath;
+	rv = resolveApplicationExecutable(exePath);
+	if (rv != noErr)
+		return rv;
+
+	// A running instance of the application gets the initial event (or, without one, a reopen) instead of a launch.
+	if (!(appParams->flags & kLSLaunchNewInstance) && bundlePath != exePath)
+	{
+		CFURLRef bundleURL = CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+			(const UInt8*) bundlePath.c_str(), bundlePath.size(), true);
+		pid_t running = bundleURL ? _LSFindRunningApplication(bundleURL) : 0;
+		if (bundleURL)
+			CFRelease(bundleURL);
+		if (running > 0)
+		{
+			rv = appParams->initialEvent ? _LSDeliverEvent(appParams->initialEvent, running, false)
+				: _LSDeliverReopenEvent(running);
+			if (rv == noErr && outPSN)
+			{
+				outPSN->highLongOfPSN = 0;
+				outPSN->lowLongOfPSN = running;
+			}
+			return rv;
+		}
+	}
+
+	if (appParams->argv != nullptr)
+	{
+		CFIndex count = CFArrayGetCount(appParams->argv);
+
+		for (CFIndex i = 0; i < count; i++)
+		{
+			CFStringRef ref = (CFStringRef) CFArrayGetValueAtIndex(appParams->argv, i);
+			if (CFGetTypeID(ref) != CFStringGetTypeID())
+				return paramErr;
+
+			CFIndex capacity = CFStringGetMaximumSizeForEncoding(
+				CFStringGetLength(ref), kCFStringEncodingUTF8) + 1;
+			if (capacity <= 0)
+				return paramErr;
+			std::vector<char> buffer(capacity);
+			if (!CFStringGetCString(ref, buffer.data(), buffer.size(), kCFStringEncodingUTF8))
+				return paramErr;
+			argumentStorage.emplace_back(buffer.data());
+		}
+		// Take pointers only after storage growth can no longer invalidate them.
+		for (std::string& argument : argumentStorage)
+			argv.push_back((char*) argument.c_str());
+		argv.push_back(nullptr);
+	}
+	else
+	{
+		argv.push_back((char*) exePath.c_str());
+		argv.push_back(nullptr);
+	}
+
+	if (appParams->environment != nullptr)
+	{
+		CFIndex count = CFDictionaryGetCount(appParams->environment);
+		envp.reset(new std::vector<char*>);
+		
+		CFDictionaryApplyFunction(appParams->environment, [](const void* key, const void* value, void* context) {
+					CFStringRef skey = (CFStringRef) key;
+					CFStringRef svalue = (CFStringRef) value;
+					std::vector<char*>* envp = (std::vector<char*>*) context;
+
+					if (CFGetTypeID(skey) == CFStringGetTypeID() && CFGetTypeID(svalue) == CFStringGetTypeID())
+					{
+						CFIndex keyCapacity = CFStringGetMaximumSizeForEncoding(
+							CFStringGetLength(skey), kCFStringEncodingUTF8) + 1;
+						CFIndex valueCapacity = CFStringGetMaximumSizeForEncoding(
+							CFStringGetLength(svalue), kCFStringEncodingUTF8) + 1;
+						char* str = new char[keyCapacity + valueCapacity + 1];
+						if (CFStringGetCString(skey, str, keyCapacity, kCFStringEncodingUTF8))
+						{
+							size_t keyLength = strlen(str);
+							str[keyLength] = '=';
+							if (CFStringGetCString(svalue, str + keyLength + 1,
+								valueCapacity, kCFStringEncodingUTF8))
+								envp->push_back(str);
+							else
+								delete [] str;
+						}
+						else
+							delete [] str;
+					}
+				}, envp.get());
+		envp->push_back(nullptr);
+	}
+
+	// https://stackoverflow.com/questions/1584956/how-to-handle-execvp-errors-after-fork
+	
+	if (pipe(pipefds))
+	{
+		if (envp)
+			std::for_each(envp->begin(), envp->end(), [](char* p) { delete [] p; });
+
+		return makeOSStatus(errno);
+	}
+
+	fcntl(pipefds[1], F_SETFD, fcntl(pipefds[1], F_GETFD) | FD_CLOEXEC);
+
+	switch (pid = fork())
+	{
+		case -1:
+			rv = makeOSStatus(errno);
+			break;
+		case 0:
+			close(pipefds[0]);
+			execvpe(exePath.c_str(), &argv[0], envp ? &(*envp)[0] : nullptr);
+			write(pipefds[1], &errno, sizeof(int));
+			_exit(1);
+			break;
+		default:
+		{
+			int err, count;
+			close(pipefds[1]);
+
+			while ((count = read(pipefds[0], &err, sizeof(errno))) == -1)
+			{
+				if (errno != EAGAIN && errno != EINTR)
+					break;
+			}
+
+			if (count == sizeof(err))
+				rv = makeOSStatus(err);
+			else if (count < 0)
+				rv = makeOSStatus(errno);
+			else if (count != 0)
+				rv = makeOSStatus(EIO);
+			else
+			{
+				// The initial event is the new process's first event.
+				if (appParams->initialEvent)
+				{
+					OSStatus delivered = _LSDeliverEvent(appParams->initialEvent, pid, true);
+					if (delivered != noErr)
+						os_log_error(OS_LOG_DEFAULT, "LaunchServices: could not deliver the initial event to process %d: %d",
+							(int) pid, (int) delivered);
+				}
+				if (outPSN)
+				{
+					// Match HIServices GetProcessForPID, but do not publish a
+					// process identifier when the launch error pipe reports failure.
+					outPSN->highLongOfPSN = 0;
+					outPSN->lowLongOfPSN = pid;
+				}
+			}
+			close(pipefds[0]);
+		}
+	}
+	
+	if (envp)
+		std::for_each(envp->begin(), envp->end(), [](char* p) { delete [] p; });
+
+	return rv;
+}
+
+/*OSStatus LSOpenCFURLRef(CFURLRef inURL, CFURLRef *outLaunchedURL)
+{
+	// TODO: use 'xdg-mime query' and 'xdg-mime default' to determine the app?
+
+    const char *str = CFStringGetCStringPtr(CFURLGetString(inURL),CFStringGetSystemEncoding());
+    std::vector<std::string> args;
+    args.push_back(str);
+    launchApp(g_scXdgOpenPath,args);
+    outLaunchedURL = nullptr;
+	return unimpErr;
+}*/
+
+OSStatus LSGetExtensionInfo(UniCharCount inNameLen, const UniChar* inNameBuffer, UniCharCount *outExtStartIndex)
+{
+	if (!outExtStartIndex)
+		return paramErr;
+
+	UnicodeString str((const char*) inNameBuffer, inNameLen*2, UNICHAR_ENCODING);
+	int32_t pos = str.lastIndexOf('.');
+
+	if (pos == -1)
+		*outExtStartIndex = inNameLen;
+	else
+		*outExtStartIndex = pos;
+
+	return noErr;
+}
+
+// TODO: See https://gist.github.com/zorgiepoo/d751cba19a0167a589a2
+
+/*
+OSStatus _LSOpenURLsWithRole(CFArrayRef inURLs, LSRolesMask inRole, void *unknown)
+{
+	CFURLRef url = CFArrayGetValueAtIndex(inURLs, 0);
+	LSOpenCFURLRef(url, NULL);
+	return noErr;
+}
+*/
+
+CFStringRef LSUserApplicationType = CFSTR("User");
+CFStringRef LSSystemApplicationType = CFSTR("System");
+CFStringRef LSInternalApplicationType = CFSTR("Internal");
+CFStringRef LSPlugInKitType = CFSTR("PluginKitPlugin");
+CFStringRef LSVPNPluginType = CFSTR("VPNPlugin");

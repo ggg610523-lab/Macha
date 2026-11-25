@@ -1,0 +1,215 @@
+/*
+ This file is part of Darling.
+
+ Copyright (C) 2019 Lubos Dolezel
+
+ Darling is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Darling is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+#ifndef _ColorSync_H_
+#define _ColorSync_H_
+
+#include <CoreFoundation/CoreFoundation.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void* CGDisplayCreateUUIDFromDisplayID(void);
+void* CGDisplayGetDisplayIDFromUUID(void);
+void* CMProfileFromColorSyncProfile(void);
+void* ColorSyncCMMCopyCMMIdentifier(void);
+void* ColorSyncCMMCopyLocalizedName(void);
+void* ColorSyncCMMCreate(void);
+void* ColorSyncCMMGetBundle(void);
+void* ColorSyncCMMGetTypeID(void);
+void* ColorSyncCodeFragmentGetMD5(void);
+void* ColorSyncConvertDoubleXYZToD50(void);
+void* ColorSyncConvertXYZToXYZWithChromaticAdaptationMatrix(void);
+void* ColorSyncCreateCodeFragment(void);
+void* ColorSyncCreateCodeFragmentPriv(void);
+void* ColorSyncCreateGammaTablesFromVCGT(void);
+void* ColorSyncCreateInputPoppyProfile(void);
+void* ColorSyncCreateOutputPoppyProfile(void);
+void* ColorSyncCreateOutputPoppyProfileForRGBData(void);
+void* ColorSyncCreateSignatureFromFourCharCode(void);
+void* ColorSyncDataCanBeIgnoredOnSRGBDevice(void);
+void* ColorSyncDeviceCopyDeviceInfo(void);
+void* ColorSyncDeviceCopyDeviceRegistrationInfo(void);
+void* ColorSyncDeviceSetCustomProfiles(void);
+void* ColorSyncDisplayServicesUpdateProfiles(void);
+void* ColorSyncGetAdaptationMtx(void);
+void* ColorSyncGetDisplayTransferFormulaFromVCGT(void);
+void* ColorSyncGetFourCharCodeFromSignature(void);
+void* ColorSyncGetMainDisplayID(void);
+void* ColorSyncGetUInt32FromUUID(void);
+void* ColorSyncIterateDeviceProfiles(void);
+void* ColorSyncIterateInstalledCMMs(void);
+void* ColorSyncIterateInstalledProfiles(void);
+void* ColorSyncIterateInstalledProfilesWithOptions(void);
+void* ColorSyncMakeProfile(void);
+void* ColorSyncMatrixGetFunction(void);
+void* ColorSyncMatrixGetOptions(void);
+void* ColorSyncMatrixGetProperties(void);
+void* ColorSyncMatrixGetRange(void);
+void* ColorSyncMatrixGetTypeID(void);
+void* ColorSyncNxMLUTGetFunction(void);
+void* ColorSyncNxMLUTGetOptions(void);
+void* ColorSyncNxMLUTGetProperties(void);
+void* ColorSyncNxMLUTGetRange(void);
+void* ColorSyncNxMLUTGetTypeID(void);
+void* ColorSyncProfileCopyASCIIDescriptionString(void);
+void* ColorSyncProfileCopyLocalizedDescriptionString(void);
+void* ColorSyncProfileCopyLocalizedStringDictionary(void);
+void* ColorSyncProfileCreateDeviceProfile(void);
+void* ColorSyncProfileCreateDisplayTransferTablesFromVCGT(void);
+void* ColorSyncProfileCreateLink(void);
+void* ColorSyncProfileCreateMutable(void);
+void* ColorSyncProfileCreateSanitizedCopy(void);
+void* ColorSyncProfileCreateWithDisplayID(void);
+void* ColorSyncProfileEstimateGamma(void);
+void* ColorSyncProfileEstimateGammaWithDisplayID(void);
+void* ColorSyncProfileFromCMProfile(void);
+void* ColorSyncProfileGetData(void);
+void* ColorSyncProfileGetDisplayTransferFormulaFromVCGT(void);
+void* ColorSyncProfileInstall(void);
+void* ColorSyncProfileIsWideGamut(void);
+void* ColorSyncProfileProducesMatrixTransform(void);
+void* ColorSyncProfileRemoveTag(void);
+void* ColorSyncProfileSetDescriptionTag(void);
+void* ColorSyncProfileSetLocalizedStringDictionary(void);
+void* ColorSyncProfileSetParametricTRCTag(void);
+void* ColorSyncProfileSetTag(void);
+void* ColorSyncProfileStreamPS2Definition(void);
+void* ColorSyncProfileUninstall(void);
+void* ColorSyncProfileVerify(void);
+void* ColorSyncProfileWriteToFile(void);
+void* ColorSyncPureGammaOriginalTRC(void);
+void* ColorSyncSwapProfileHeader(void);
+void* ColorSyncTRCGetFunction(void);
+void* ColorSyncTRCGetGammaID(void);
+void* ColorSyncTRCGetLuminanceScale(void);
+void* ColorSyncTRCGetOptions(void);
+void* ColorSyncTRCGetProperties(void);
+void* ColorSyncTRCGetRange(void);
+void* ColorSyncTRCGetTypeID(void);
+void* ColorSyncTransformConvert(void);
+void* ColorSyncTransformCopyProperty(void);
+void* ColorSyncTransformCreate(void);
+void* ColorSyncTransformCreateWithName(void);
+void* ColorSyncTransformGetTypeID(void);
+void* ColorSyncTransformIterate(void);
+void* ColorSyncTransformSetProperty(void);
+void* ColorSyncVerifyAdobeRGBData(void);
+void* ColorSyncVerifyDisplayP3Data(void);
+void* ColorSyncVerifyGenericGrayGamma2_2Data(void);
+void* ColorSyncVerifyGenericLabData(void);
+void* ColorSyncVerifySRGBData(void);
+
+// fixed-up declarations
+
+// GUESS: the pages name ColorSyncProfileRef but not its struct tag or constness; this is a plain pointer to an
+// opaque struct.
+typedef struct __ColorSyncProfile* ColorSyncProfileRef;
+
+// The public ColorSyncProfile.h of the MacOSX10.15 SDK (github.com/phracker/MacOSX-SDKs) declares the mutable reference
+// as a pointer to the same struct as the profile reference, without the const: a mutable profile is a profile with a flag.
+typedef struct __ColorSyncProfile* ColorSyncMutableProfileRef;
+
+CFTypeID ColorSyncProfileGetTypeID(void);
+
+// As the public ColorSyncProfile.h of the MacOSX10.15 SDK declares them (github.com/phracker/MacOSX-SDKs): the length is
+// 16 and the digest type is an unnamed struct of that many bytes.
+#define COLORSYNC_MD5_LENGTH 16
+
+typedef struct {
+	uint8_t digest[COLORSYNC_MD5_LENGTH];
+} ColorSyncMD5;
+
+ColorSyncMD5 ColorSyncProfileGetMD5(ColorSyncProfileRef prof);
+
+ColorSyncProfileRef ColorSyncProfileCreate(CFDataRef data, CFErrorRef* error);
+CFDataRef ColorSyncProfileCopyData(ColorSyncProfileRef prof, CFErrorRef* error);
+ColorSyncProfileRef ColorSyncProfileCreateWithName(CFStringRef name);
+bool ColorSyncProfileContainsTag(ColorSyncProfileRef prof, CFStringRef signature);
+CFDataRef ColorSyncProfileCopyTag(ColorSyncProfileRef prof, CFStringRef signature);
+CFStringRef ColorSyncProfileCopyDescriptionString(ColorSyncProfileRef prof);
+CFArrayRef ColorSyncProfileCopyTagSignatures(ColorSyncProfileRef prof);
+bool ColorSyncProfileIsMatrixBased(ColorSyncProfileRef prof);
+ColorSyncProfileRef ColorSyncProfileCreateWithURL(CFURLRef url, CFErrorRef* error);
+CFURLRef ColorSyncProfileGetURL(ColorSyncProfileRef prof, CFErrorRef* error);
+ColorSyncMutableProfileRef ColorSyncProfileCreateMutableCopy(ColorSyncProfileRef prof);
+CFDataRef ColorSyncProfileCopyHeader(ColorSyncProfileRef prof);
+void ColorSyncProfileSetHeader(ColorSyncMutableProfileRef prof, CFDataRef header);
+
+CFUUIDRef ColorSyncCreateUUIDFromUInt32(unsigned int uuid);
+bool ColorSyncRegisterDevice(CFStringRef deviceClass, CFUUIDRef uuid, CFDictionaryRef info);
+bool ColorSyncUnregisterDevice(CFStringRef deviceClass, CFUUIDRef uuid);
+
+extern CFStringRef kColorSyncDeviceProfileURL;
+extern CFStringRef kColorSyncDeviceModeDescriptions;
+extern CFStringRef kColorSyncDeviceDefaultProfileID;
+extern CFStringRef kColorSyncDeviceDescriptions;
+extern CFStringRef kColorSyncFactoryProfiles;
+extern CFStringRef kColorSyncDeviceUserScope;
+extern CFStringRef kColorSyncDeviceHostScope;
+extern CFStringRef kColorSyncPrinterDeviceClass;
+extern CFStringRef kColorSyncCustomProfiles;
+extern CFStringRef kColorSyncDisplayDeviceClass;
+
+void* ColorSyncProfileCreateWithURLAndOptions(void);
+void* ColorSyncProfileCopyFlexGTCInfo(void);
+void* ColorSyncProfileCreateFlexGTCLookupData(void);
+
+extern CFStringRef kColorSyncGenericGrayGamma22Profile;
+extern CFStringRef kColorSyncGenericLabProfile;
+extern CFStringRef kColorSyncGenericXYZProfile;
+extern CFStringRef kColorSyncGenericCMYKProfile;
+extern CFStringRef kColorSyncSRGBProfile;
+extern CFStringRef kColorSyncAdobeRGB1998Profile;
+extern CFStringRef kColorSyncITUR2020Profile;
+
+extern CFStringRef kColorSyncProfileHeader;
+extern CFStringRef kColorSyncProfileDescription;
+extern CFStringRef kColorSyncProfileURL;
+extern CFStringRef kColorSyncProfileMD5Digest;
+
+extern CFStringRef kColorSyncProfile;
+extern CFStringRef kColorSyncRenderingIntent;
+extern CFStringRef kColorSyncRenderingIntentUseProfileHeader;
+extern CFStringRef kColorSyncRenderingIntentPerceptual;
+extern CFStringRef kColorSyncRenderingIntentRelative;
+extern CFStringRef kColorSyncRenderingIntentSaturation;
+extern CFStringRef kColorSyncRenderingIntentAbsolute;
+extern CFStringRef kColorSyncTransformTag;
+extern CFStringRef kColorSyncTransformDeviceToPCS;
+extern CFStringRef kColorSyncTransformPCSToPCS;
+extern CFStringRef kColorSyncTransformPCSToDevice;
+extern CFStringRef kColorSyncTransformGamutCheck;
+extern CFStringRef kColorSyncTransformSimplifiedConversionData;
+extern CFStringRef kColorSyncConversion3DLut;
+extern CFStringRef kColorSyncConversionGridPoints;
+extern CFStringRef kColorSyncBlackPointCompensation;
+extern CFStringRef kColorSyncExtendedRange;
+extern CFStringRef kColorSyncDoNotSubstituteProfiles;
+extern CFStringRef kColorSyncWaitForCacheReply;
+extern CFStringRef kColorSyncGainMapBaselineHeadroom;
+extern CFStringRef kColorSyncMonoGainMapParams;
+
+#ifdef __cplusplus
+};
+#endif
+
+#endif

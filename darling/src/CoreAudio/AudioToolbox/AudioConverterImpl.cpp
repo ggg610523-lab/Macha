@@ -1,0 +1,1098 @@
+/*
+This file is part of Darling.
+
+Copyright (C) 2020 Lubos Dolezel
+
+Darling is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Darling is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "AudioConverterImpl.h"
+#include "PCMConverter.h"
+#include <CarbonCore/MacErrors.h>
+#include <algorithm>
+#include <stdexcept>
+#include <cstring>
+#include <cassert>
+#include <iostream>
+#include <sstream>
+#include "stub.h"
+#include "../FFmpegAvailability.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
+#include <libavutil/mem.h>
+}
+
+static constexpr int ENCODER_FRAME_SAMPLES = 1024;
+
+// http://blinkingblip.wordpress.com/
+
+static void throwFFMPEGError(int errnum, const char* function)
+{
+	char buf[256];
+	std::stringstream ss;
+
+	if (av_strerror(errnum, buf, sizeof(buf)) == 0)
+		ss << function << ": " << buf;
+	else
+		ss << function << ": unknown error";
+
+	throw std::runtime_error(ss.str());
+}
+
+// Finds the decoder specific information in an MPEG-4 ES descriptor (ISO/IEC 14496-1): an
+// ES_Descriptor holds a DecoderConfigDescriptor, which holds the DecoderSpecificInfo.
+static bool findDecoderSpecificInfo(const uint8_t* p, size_t size, const uint8_t** out, size_t* outSize)
+{
+	while (size >= 2)
+	{
+		const uint8_t tag = *p++;
+		size--;
+		size_t length = 0;
+		unsigned lengthBytes = 0;
+		uint8_t b;
+		do
+		{
+			if (!size || lengthBytes == 4)
+				return false;
+			b = *p++;
+			size--;
+			lengthBytes++;
+			length = (length << 7) | (b & 0x7f);
+		} while (b & 0x80);
+		if (length > size)
+			return false;
+
+		size_t skip = 0;
+		if (tag == 0x03) // ES_ID, flags, and what the flags announce
+		{
+			if (length < 3)
+				return false;
+			const uint8_t flags = p[2];
+			skip = 3;
+			if (flags & 0x80)
+				skip += 2;
+			if (flags & 0x40)
+			{
+				if (skip >= length)
+					return false;
+				skip += 1 + p[skip];
+			}
+			if (flags & 0x20)
+				skip += 2;
+		}
+		else if (tag == 0x04) // object type, stream type, buffer size, bit rates
+			skip = 13;
+		else if (tag == 0x05)
+		{
+			*out = p;
+			*outSize = length;
+			return true;
+		}
+		else
+		{
+			p += length;
+			size -= length;
+			continue;
+		}
+
+		if (skip > length)
+			return false;
+		if (findDecoderSpecificInfo(p + skip, length - skip, out, outSize))
+			return true;
+		p += length;
+		size -= length;
+	}
+	return false;
+}
+
+// Reduces the magic cookie of a compressed format to the configuration its FFmpeg decoder takes.
+// AAC cookies are ES descriptors (optionally preceded by the version and flags of the esds box)
+// around the AudioSpecificConfig; FLAC cookies are the "fLaC" marker and metadata blocks around the
+// STREAMINFO. Other cookies already are the codec's own configuration.
+static void unwrapMagicCookie(AudioFormatID format, const uint8_t*& data, size_t& size)
+{
+	switch (format)
+	{
+		case kAudioFormatMPEG4AAC:
+		case kAudioFormatMPEG4AAC_HE:
+		case kAudioFormatMPEG4AAC_LD:
+		case kAudioFormatMPEG4AAC_ELD:
+		case kAudioFormatMPEG4AAC_ELD_SBR:
+		case kAudioFormatMPEG4AAC_ELD_V2:
+		case kAudioFormatMPEG4AAC_HE_V2:
+		case kAudioFormatMPEG4AAC_Spatial:
+		{
+			const uint8_t* start = data;
+			size_t length = size;
+			if (length >= 4 && start[0] == 0 && start[1] == 0 && start[2] == 0 && start[3] == 0)
+			{
+				start += 4;
+				length -= 4;
+			}
+			if (length && start[0] == 0x03)
+			{
+				const uint8_t* info;
+				size_t infoSize;
+				if (findDecoderSpecificInfo(start, length, &info, &infoSize))
+				{
+					data = info;
+					size = infoSize;
+				}
+			}
+			break;
+		}
+		case kAudioFormatFLAC:
+			// "fLaC", a metadata block header (4 bytes), then the STREAMINFO block
+			if (size >= 8 + 34 && memcmp(data, "fLaC", 4) == 0)
+			{
+				data += 8;
+				size = 34;
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+AudioConverter::AudioConverter(const AudioStreamBasicDescription* inSourceFormat, const AudioStreamBasicDescription* inDestinationFormat)
+    : m_sourceFormat(*inSourceFormat), m_destinationFormat(*inDestinationFormat), m_decoder(nullptr), m_encoder(nullptr)
+{
+	memset(&m_avpkt, 0, sizeof(m_avpkt));
+	memset(&m_avpktOut, 0, sizeof(m_avpktOut));
+}
+
+void AudioConverter::flush()
+{
+	TRACE();
+	if (m_pcm)
+	{
+		m_pcm->reset();
+		return;
+	}
+
+	if (!m_decoderNeedsCookie)
+		avcodec_flush_buffers(m_decoder);
+	// Encoders without state of their own, like PCM, don't support this and complain about it
+	if (m_encoderInitialized && (m_encoder->codec->capabilities & AV_CODEC_CAP_ENCODER_FLUSH))
+		avcodec_flush_buffers(m_encoder);
+
+	// Anything still buffered belongs to the data from before the reset
+	if (m_resampler)
+		swr_free(&m_resampler);
+
+	m_audioFramePrebuf.consume(m_audioFramePrebuf.size());
+	m_avpkt.size = 0;
+	m_avpkt.data = nullptr;
+
+	if (m_avpktOut.size)
+		av_packet_unref(&m_avpktOut);
+	m_avpktOutUsed = 0;
+
+	m_inputEnded = false;
+	m_encoderDraining = false;
+}
+
+OSStatus AudioConverter::create(const AudioStreamBasicDescription* inSourceFormat, const AudioStreamBasicDescription* inDestinationFormat, AudioConverter** out)
+{
+	TRACE2(inSourceFormat, inDestinationFormat);
+    if (!out)
+        return paramErr;
+    *out = nullptr;
+    if (!inSourceFormat || !inDestinationFormat)
+        return paramErr;
+	
+	if (inSourceFormat->mFormatID == kAudioFormatLinearPCM && inDestinationFormat->mFormatID == kAudioFormatLinearPCM)
+	{
+		OSStatus status = PCMConverter::validate(inSourceFormat, inDestinationFormat);
+		if (status != noErr)
+			return status;
+
+		*out = new AudioConverter(inSourceFormat, inDestinationFormat);
+		(*out)->m_pcm = new PCMConverter(inSourceFormat, inDestinationFormat);
+		return noErr;
+	}
+
+	// Compressed formats are converted through FFmpeg
+	if (!ffmpegCodecsAvailable())
+		return kAudioConverterErr_FormatNotSupported;
+
+	// TODO: non-interleaved audio
+
+	const AVCodec *codecIn, *codecOut;
+	AVCodecContext *cIn;
+	AVCodecContext *cOut;
+	enum AVCodecID idIn, idOut;
+
+	*out = nullptr;
+	idIn = CACodecToAV(inSourceFormat);
+	idOut = CACodecToAV(inDestinationFormat);
+
+	if (idIn == AV_CODEC_ID_NONE || idOut == AV_CODEC_ID_NONE)
+	{
+		// LOG << "AudioConverter::create(): Unsupported codec, format in = " << std::hex << inSourceFormat->mFormatID << ", out = " << inDestinationFormat->mFormatID << std::dec << std::endl;
+		return paramErr;
+	}
+
+	codecIn = avcodec_find_decoder(idIn);
+	codecOut = avcodec_find_encoder(idOut);
+
+	if (!codecIn || !codecOut)
+	{
+		// LOG << "AudioConverter::create(): avcodec_find_*() failed, format in = " << std::hex << inSourceFormat->mFormatID << ", out = " << inDestinationFormat->mFormatID << std::dec << std::endl;
+		return paramErr;
+	}
+
+	*out = new AudioConverter(inSourceFormat, inDestinationFormat);
+
+	(*out)->m_decoder = cIn = avcodec_alloc_context3(codecIn);
+	
+	// Raw samples have no header of their own to tell the decoder how many channels there are
+	if (inSourceFormat->mFormatID == kAudioFormatLinearPCM || inSourceFormat->mFormatID == kAudioFormatULaw || inSourceFormat->mFormatID == kAudioFormatALaw)
+	{
+#warning "TODO: Remove deprecated 'channels' once we no longer support older distros" 
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+		av_channel_layout_default(&cIn->ch_layout, inSourceFormat->mChannelsPerFrame);
+#else
+		cIn->channels = inSourceFormat->mChannelsPerFrame;
+#endif
+		cIn->sample_rate = inSourceFormat->mSampleRate;
+	}
+	
+	// The decoder of Apple Lossless cannot open without the configuration of the stream, which a client
+	// sets as the magic cookie after creating the converter
+	const bool cookieRequired = inSourceFormat->mFormatID == kAudioFormatAppleLossless;
+
+	if (cookieRequired)
+	{
+		(*out)->m_decoderNeedsCookie = true;
+	}
+	else if (avcodec_open2((*out)->m_decoder, codecIn, nullptr) < 0)
+	{
+		delete *out;
+        *out = nullptr;
+		std::cerr << "AudioConverter::create(): avcodec_open() failed, format in = " << std::hex << inSourceFormat->mFormatID << ", out = " << inDestinationFormat->mFormatID << std::dec << std::endl;
+
+		return paramErr;
+	}
+
+	// The encoder will be initialized after we process the first packet
+	(*out)->m_encoder = cOut = avcodec_alloc_context3(codecOut);
+	(*out)->m_codecIn = codecIn;
+	(*out)->m_codecOut = codecOut;
+
+	return noErr;
+}
+
+void AudioConverter::initEncoder()
+{
+	int err;
+	
+	if (m_encoderInitialized)
+		throw std::logic_error("Encoder already initialized");
+	
+	m_encoder->codec_type = AVMEDIA_TYPE_AUDIO;
+	m_encoder->bit_rate = m_outBitRate;
+#warning "TODO: Remove deprecated 'channels' once we no longer support older distros" 
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+	av_channel_layout_default(&m_encoder->ch_layout, m_destinationFormat.mChannelsPerFrame);
+#else
+	m_encoder->channels = m_destinationFormat.mChannelsPerFrame;
+	m_encoder->channel_layout = CAChannelCountToLayout(m_destinationFormat.mChannelsPerFrame);
+#endif
+	m_encoder->sample_rate = m_destinationFormat.mSampleRate;
+	m_encoder->sample_fmt = CACodecSampleFormat(&m_destinationFormat);
+
+#ifdef DEBUG_AUDIOCONVERTER
+	std::cout << "ENCODER FORMAT:\n";
+	std::cout << "\tSample rate: " << m_encoder->sample_rate << std::endl;
+	std::cout << "\tChannels: " << m_destinationFormat.mChannelsPerFrame << std::endl;
+	std::cout << "\tFormat: 0x" << std::hex << m_encoder->sample_fmt << std::dec << std::endl;
+#endif
+	
+	err = avcodec_open2(m_encoder, m_codecOut, 0);
+	if (err < 0)
+		throwFFMPEGError(err, "avcodec_open2() encoder");
+	
+	allocateBuffers();
+	m_encoderInitialized = true;
+}
+
+void AudioConverter::allocateBuffers()
+{
+#ifdef HAVE_AV_FRAME_ALLOC
+	m_audioFrame = av_frame_alloc();
+#else
+	m_audioFrame = avcodec_alloc_frame();
+#endif
+	
+	m_audioFrame->nb_samples = ENCODER_FRAME_SAMPLES;
+	m_audioFrame->format = m_encoder->sample_fmt;
+	m_audioFrame->sample_rate = m_encoder->sample_rate;
+
+#warning "TODO: Remove deprecated 'channels' once we no longer support older distros" 
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+	av_channel_layout_copy(&m_audioFrame->ch_layout, &m_encoder->ch_layout);
+	int audioSampleBuffer_size = av_samples_get_buffer_size(nullptr, m_encoder->ch_layout.nb_channels, m_audioFrame->nb_samples, m_encoder->sample_fmt, 0);
+#else
+	m_audioFrame->channel_layout = m_encoder->channel_layout;
+	int audioSampleBuffer_size = av_samples_get_buffer_size(nullptr, m_encoder->channels, m_audioFrame->nb_samples, m_encoder->sample_fmt, 0);
+#endif
+	void* audioSampleBuffer = (uint8_t*) av_malloc(audioSampleBuffer_size);
+
+	if (!audioSampleBuffer)
+	{
+		std::cerr << "AudioConverter::allocateBuffers(): Failed to allocate sample buffer\n";
+		throw std::runtime_error("AudioConverter::allocateBuffers(): Failed to allocate sample buffer");
+	}
+
+	// Setup the data pointers in the AVFrame
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+	if (int err = avcodec_fill_audio_frame(m_audioFrame, m_encoder->ch_layout.nb_channels, m_encoder->sample_fmt,
+		(const uint8_t*) audioSampleBuffer, audioSampleBuffer_size, 0 ); err < 0)
+#else
+	if (int err = avcodec_fill_audio_frame(m_audioFrame, m_encoder->channels, m_encoder->sample_fmt,
+		(const uint8_t*) audioSampleBuffer, audioSampleBuffer_size, 0 ); err < 0)
+#endif
+	{
+		std::cerr << "AudioConverter::allocateBuffers(): Could not set up audio frame\n";
+		throw std::runtime_error("AudioConverter::allocateBuffers(): Could not set up audio frame");
+	}
+}
+
+AudioConverter::~AudioConverter()
+{
+	TRACE();
+	delete m_pcm;
+	if (m_decoder)
+		avcodec_free_context(&m_decoder);
+	if (m_encoder)
+		avcodec_free_context(&m_encoder);
+	if (m_audioFrame)
+		av_free(m_audioFrame);
+	if (m_resampler)
+		swr_free(&m_resampler);
+}
+
+template <typename T> OSStatus setPropertyT(UInt32 inPropertyDataSize, T* localProperty, const void* propertySource)
+{
+	const T* t = static_cast<const T*>(propertySource);
+	
+	if (inPropertyDataSize != sizeof(T))
+		return kAudioConverterErr_BadPropertySizeError;
+	
+	*localProperty = *t;
+	return noErr;
+}
+
+OSStatus AudioConverter::setProperty(AudioConverterPropertyID inPropertyID, UInt32 inPropertyDataSize, const void *inPropertyData)
+{
+	if (m_pcm)
+		return m_pcm->setProperty(inPropertyID, inPropertyDataSize, inPropertyData);
+
+	switch (inPropertyID)
+	{
+		case kAudioConverterEncodeBitRate:
+		{
+			return setPropertyT(inPropertyDataSize, &m_outBitRate, inPropertyData);
+		}
+		case kAudioConverterDecompressionMagicCookie:
+		{
+			// The decoder only reads this when opened, so it needs to be opened again
+			const AVCodec* codec = m_codecIn;
+			if (!codec)
+				return kAudioConverterErr_PropertyNotSupported;
+			AVCodecContext* decoder = avcodec_alloc_context3(codec);
+
+			if (!decoder)
+				return kAudioConverterErr_UnspecifiedError;
+
+			// The cookie of a format is wrapped differently from the codec's own configuration
+			const uint8_t* config = static_cast<const uint8_t*>(inPropertyData);
+			size_t configSize = inPropertyDataSize;
+			unwrapMagicCookie(m_sourceFormat.mFormatID, config, configSize);
+
+			decoder->extradata = static_cast<uint8_t*>(av_mallocz(configSize + AV_INPUT_BUFFER_PADDING_SIZE));
+			if (!decoder->extradata)
+			{
+				avcodec_free_context(&decoder);
+				return kAudioConverterErr_UnspecifiedError;
+			}
+			decoder->extradata_size = configSize;
+			memcpy(decoder->extradata, config, configSize);
+
+			if (avcodec_open2(decoder, codec, nullptr) < 0)
+			{
+				avcodec_free_context(&decoder);
+				return kAudioConverterErr_FormatNotSupported;
+			}
+
+			avcodec_free_context(&m_decoder);
+			m_decoder = decoder;
+			m_decoderNeedsCookie = false;
+			return noErr;
+		}
+		case kAudioConverterInputChannelLayout:
+		{
+		}
+		case kAudioConverterOutputChannelLayout:
+		{
+		}
+		case kAudioConverterCurrentOutputStreamDescription:
+		{
+			return kAudioConverterErr_PropertyNotSupported;
+			//return setPropertyT(inPropertyDataSize, &m_sourceFormat, inPropertyData);
+		}
+		case kAudioConverterCurrentInputStreamDescription:
+		{
+			return kAudioConverterErr_PropertyNotSupported;
+			//return setPropertyT(inPropertyDataSize, &m_destinationFormat, inPropertyData);
+		}
+		default:
+		{
+			STUB();
+			return kAudioConverterErr_PropertyNotSupported;
+		}
+	}
+	
+	return unimpErr;
+}
+
+OSStatus AudioConverter::getPropertyInfo(AudioConverterPropertyID inPropertyID, UInt32 *outSize, Boolean *outWritable)
+{
+	if (m_pcm)
+		return m_pcm->getPropertyInfo(inPropertyID, outSize, outWritable);
+
+	STUB();
+	return unimpErr;
+}
+
+template <typename T> OSStatus getPropertyT(UInt32 *ioPropertyDataSize, const T* localProperty, void* propertyTarget)
+{
+	T* t = static_cast<T*>(propertyTarget);
+	
+	if (*ioPropertyDataSize < sizeof(T))
+		return kAudioConverterErr_BadPropertySizeError;
+	*ioPropertyDataSize = sizeof(T);
+	
+	*t = *localProperty;
+	return noErr;
+}
+
+OSStatus AudioConverter::getProperty(AudioConverterPropertyID inPropertyID, UInt32 *ioPropertyDataSize, void *outPropertyData)
+{
+	if (m_pcm)
+		return m_pcm->getProperty(inPropertyID, ioPropertyDataSize, outPropertyData);
+
+	switch (inPropertyID)
+	{
+		case kAudioConverterEncodeBitRate:
+		{
+			return getPropertyT(ioPropertyDataSize, &m_outBitRate, outPropertyData);
+		}
+		case kAudioConverterCurrentInputStreamDescription:
+		{
+			return getPropertyT(ioPropertyDataSize, &m_sourceFormat, outPropertyData);
+		}
+		case kAudioConverterCurrentOutputStreamDescription:
+		{
+			return getPropertyT(ioPropertyDataSize, &m_destinationFormat, outPropertyData);
+		}
+		default:
+		{
+			STUB();
+			return kAudioConverterErr_PropertyNotSupported;
+		}
+	}
+}
+
+OSStatus AudioConverter::feedInput(AudioConverterComplexInputDataProc dataProc, void* opaque, UInt32& numDataPackets)
+{
+	AudioBufferList bufferList;
+	AudioStreamPacketDescription* aspd;
+	OSStatus err;
+
+	numDataPackets = 4096; // TODO: increase this?
+	bufferList.mNumberBuffers = 1;
+	bufferList.mBuffers[0].mDataByteSize = 0;
+	bufferList.mBuffers[0].mData = nullptr;
+	
+	err = dataProc(AudioConverterRef(this), &numDataPackets, &bufferList, &aspd, opaque);
+	
+	if (err != noErr)
+		return err;
+	
+	m_avpkt.size = bufferList.mBuffers[0].mDataByteSize;
+	m_avpkt.data = (uint8_t*) bufferList.mBuffers[0].mData;
+	
+	return noErr;
+}
+
+void AudioConverter::setupResampler(const AVFrame* frame)
+{
+	int err;
+	
+	if (m_resampler != nullptr)
+		throw std::logic_error("Resampler already created");
+	
+	m_resampler = swr_alloc();
+	m_targetFormat = CACodecSampleFormat(&m_destinationFormat);
+	
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+	AVChannelLayout outLayout;
+	av_channel_layout_default(&outLayout, m_destinationFormat.mChannelsPerFrame);
+	av_opt_set_chlayout(m_resampler, "in_chlayout", &frame->ch_layout, 0);
+	av_opt_set_chlayout(m_resampler, "out_chlayout", &outLayout, 0);
+#else
+	av_opt_set_int(m_resampler, "in_channel_layout", CAChannelCountToLayout(m_sourceFormat.mChannelsPerFrame), 0);
+	av_opt_set_int(m_resampler, "out_channel_layout", CAChannelCountToLayout(m_destinationFormat.mChannelsPerFrame), 0);
+	av_opt_set_int(m_resampler, "in_channels", m_sourceFormat.mChannelsPerFrame, 0);
+	av_opt_set_int(m_resampler, "out_channels", m_destinationFormat.mChannelsPerFrame, 0);
+#endif
+	av_opt_set_int(m_resampler, "in_sample_rate", frame->sample_rate, 0);
+	av_opt_set_int(m_resampler, "out_sample_rate", m_destinationFormat.mSampleRate, 0);
+	av_opt_set_int(m_resampler, "in_sample_fmt", frame->format, 0);
+	av_opt_set_int(m_resampler, "out_sample_fmt", m_targetFormat, 0);
+
+#ifdef DEBUG_AUDIOCONVERTER
+	std::cout << "RESAMPLER:\n";
+	std::cout << "\tInput rate: " << frame->sample_rate << std::endl;
+	std::cout << "\tInput format: 0x" << std::hex << frame->format << std::dec <<std::endl;
+	std::cout << "\tOutput rate: " << m_destinationFormat.mSampleRate << std::endl;
+	std::cout << "\tOutput format: 0x" << std::hex << CACodecSampleFormat(&m_destinationFormat) << std::dec << std::endl;
+
+	m_resamplerInput.open("/tmp/resampler.in.raw", std::ios_base::binary | std::ios_base::out);
+	m_resamplerOutput.open("/tmp/resampler.out.raw", std::ios_base::binary | std::ios_base::out);
+	m_encoderOutput.open("/tmp/encoder.out.raw", std::ios_base::binary | std::ios_base::out);
+#endif
+	
+	err = swr_init(m_resampler);
+	if (err < 0)
+		throwFFMPEGError(err, "swr_init()");
+}
+
+OSStatus AudioConverter::fillComplex(AudioConverterComplexInputDataProc dataProc, void* opaque,
+	UInt32* ioOutputDataPacketSize, AudioBufferList *outOutputData, AudioStreamPacketDescription* outPacketDescription)
+{
+	AVFrame* srcaudio;
+
+	if (m_pcm)
+		return m_pcm->fillComplex(AudioConverterRef(this), dataProc, opaque, ioOutputDataPacketSize, outOutputData, outPacketDescription);
+
+	if (m_decoderNeedsCookie)
+		return kAudioConverterErr_UnspecifiedError;
+
+	if (ioOutputDataPacketSize && m_destinationFormat.mBytesPerPacket && outOutputData->mNumberBuffers == 1)
+	{
+		// The caller's packet count limits the output as much as the size of its buffer does
+		const UInt32 maxBytes = *ioOutputDataPacketSize * m_destinationFormat.mBytesPerPacket;
+		outOutputData->mBuffers[0].mDataByteSize = std::min(outOutputData->mBuffers[0].mDataByteSize, maxBytes);
+	}
+
+#ifdef HAVE_AV_FRAME_ALLOC
+	srcaudio = av_frame_alloc();
+	av_frame_unref(srcaudio);
+#else
+	srcaudio = avcodec_alloc_frame();
+	avcodec_get_frame_defaults(srcaudio);
+#endif
+	
+	try
+	{
+		for (uint32_t i = 0; i < outOutputData->mNumberBuffers; i++)
+		{
+			UInt32 origSize = outOutputData->mBuffers[i].mDataByteSize;
+			UInt32& newSize = outOutputData->mBuffers[i].mDataByteSize;
+			
+			newSize = 0;
+			
+			while (newSize < origSize)
+			{
+				if (m_avpktOutUsed < m_avpktOut.size)
+				{
+					// std::cout << "case 1 (used " << m_avpktOutUsed << " from " << m_avpktOut.size << ")\n";
+					// Feed output from previous conversion
+					while (m_avpktOutUsed < m_avpktOut.size && newSize < origSize)
+					{
+						// Output data
+						int tocopy = std::min<int>(m_avpktOut.size - m_avpktOutUsed, origSize - newSize);
+						memcpy(((char*) outOutputData->mBuffers[i].mData) + newSize, m_avpktOut.data + m_avpktOutUsed, tocopy);
+						newSize += tocopy;
+						m_avpktOutUsed += tocopy;
+					}
+					
+					if (m_avpktOutUsed >= m_avpktOut.size)
+					{
+						m_avpktOutUsed = 0;
+						av_packet_unref(&m_avpktOut);
+					}
+				}
+				else
+				{
+					while (!feedEncoder())
+					{
+						if (m_inputEnded)
+						{
+							if (m_encoderDraining)
+								goto end;
+						}
+						else if (!feedDecoder(dataProc, opaque, srcaudio))
+						{
+							if (!m_inputEnded)
+								goto end;
+							drainDecoder();
+						}
+					}
+				}
+			}
+		}
+end:
+		if (ioOutputDataPacketSize && m_destinationFormat.mBytesPerPacket && outOutputData->mNumberBuffers == 1)
+			*ioOutputDataPacketSize = outOutputData->mBuffers[0].mDataByteSize / m_destinationFormat.mBytesPerPacket;
+
+#ifdef HAVE_AV_FRAME_ALLOC
+		av_frame_free(&srcaudio);
+#else
+		avcodec_free_frame(&srcaudio);
+#endif
+	}
+	catch (const std::exception& e)
+	{
+		std::cerr << "AudioConverter::fillComplex(): Exception: " << e.what();
+#ifdef HAVE_AV_FRAME_ALLOC
+		av_frame_free(&srcaudio);
+#else
+		avcodec_free_frame(&srcaudio);
+#endif
+		return ioErr;
+	}
+	catch (OSStatus err)
+	{
+		std::cerr << "AudioConverter::fillComplex(): OSStatus error: " << err;
+#ifdef HAVE_AV_FRAME_ALLOC
+		av_frame_free(&srcaudio);
+#else
+		avcodec_free_frame(&srcaudio);
+#endif
+		return err;
+	}
+	
+	return noErr;
+}
+
+bool AudioConverter::feedDecoder(AudioConverterComplexInputDataProc dataProc, void* opaque, AVFrame* srcaudio)
+{
+	int gotFrame, err;
+	
+	do
+	{
+		// Read input
+		if (!m_avpkt.size)
+		{
+			UInt32 numDataPackets = 0;
+			OSStatus err = feedInput(dataProc, opaque, numDataPackets);
+
+			// The documentation says that this may be a temporary condition
+			if (err != noErr)
+				return false;
+
+			if (!m_avpkt.size) // numDataPackets cannot be trusted
+			{
+				// A successful call without any data is the end of the stream
+				m_inputEnded = true;
+				return false;
+			}
+		}
+
+#if 0
+		err = avcodec_decode_audio4(m_decoder, srcaudio, &gotFrame, &m_avpkt);
+		if (err < 0)
+			throwFFMPEGError(err, "avcodec_decode_audio4()");
+
+		m_avpkt.size -= err;
+		m_avpkt.data += err;
+#else
+		#warning TODO: test this new avcodec decoder code
+		err = avcodec_send_packet(m_decoder, &m_avpkt);
+
+		if (err < 0) {
+			if (err == AVERROR(EAGAIN)) {
+				// we need to consume frames before sending more packets
+				err = 0;
+			}
+			if (err < 0) {
+				throwFFMPEGError(err, "avcodec_send_packet()");
+			}
+		} else {
+			// on success, the data packet has been consumed entirely
+			m_avpkt.data += m_avpkt.size;
+			m_avpkt.size = 0;
+		}
+
+		err = avcodec_receive_frame(m_decoder, srcaudio);
+
+		if (err < 0) {
+			gotFrame = false;
+			if (err == AVERROR(EAGAIN)) {
+				// we need to send more packets before consuming a frame
+				err = 0;
+			}
+			if (err < 0) {
+				throwFFMPEGError(err, "avcodec_receive_frame()");
+			}
+		} else {
+			// on success, we have a valid frame
+			gotFrame = true;
+		}
+#endif
+
+		if (gotFrame)
+		{
+			if (!m_resampler)
+				setupResampler(srcaudio);
+
+#ifdef DEBUG_AUDIOCONVERTER
+			m_resamplerInput.write((char*) srcaudio->data, srcaudio->nb_samples * 2 * m_sourceFormat.mChannelsPerFrame);
+			m_resamplerInput.flush();
+#endif
+			
+			// Resample PCM
+			resample((const uint8_t**)srcaudio->extended_data, srcaudio->nb_samples);
+		}
+	}
+	while (!gotFrame);
+
+	return true;
+}
+
+// Gets whatever the decoder was still holding back into the resampler
+void AudioConverter::drainDecoder()
+{
+	AVFrame* frame = av_frame_alloc();
+
+	avcodec_send_packet(m_decoder, nullptr);
+
+	while (avcodec_receive_frame(m_decoder, frame) >= 0)
+	{
+		if (!m_resampler)
+			setupResampler(frame);
+
+		try
+		{
+			resample((const uint8_t**)frame->extended_data, frame->nb_samples);
+		}
+		catch (...)
+		{
+			av_frame_free(&frame);
+			throw;
+		}
+		av_frame_unref(frame);
+	}
+
+	av_frame_free(&frame);
+}
+
+// Moves samples through the resampler and into the buffer in front of the encoder.
+// No input means flushing the resampler, which only makes sense at the end of a stream.
+int AudioConverter::resample(const uint8_t** input, int samples)
+{
+	const int maxOutput = swr_get_out_samples(m_resampler, samples);
+	if (maxOutput <= 0)
+		return 0;
+
+	uint8_t* output;
+	int lineSize;
+
+	if (int err = av_samples_alloc(&output, &lineSize, m_destinationFormat.mChannelsPerFrame, maxOutput, m_targetFormat, 0); err < 0)
+		throwFFMPEGError(err, "av_samples_alloc()");
+
+	const int got = swr_convert(m_resampler, &output, maxOutput, input, samples);
+
+	if (got < 0)
+	{
+		av_freep(&output);
+		throwFFMPEGError(got, "swr_convert()");
+	}
+
+	m_audioFramePrebuf.push(output, got * av_get_bytes_per_sample(m_targetFormat) * m_destinationFormat.mChannelsPerFrame);
+	av_freep(&output);
+
+	return got;
+}
+
+bool AudioConverter::feedEncoder()
+{
+	int gotFrame = 0, err;
+	if (!m_resampler)
+	{
+		if (m_inputEnded)
+			m_encoderDraining = true;
+		return false;
+	}
+
+	if (!m_encoderInitialized)
+		initEncoder();
+	
+	assert(m_avpktOutUsed == m_avpktOut.size);
+
+	// The resampler's output format may be wider than the destination, as with 24-bit audio
+	const size_t bytesPerSample = av_get_bytes_per_sample(m_targetFormat);
+	const size_t bytesPerFrame = m_destinationFormat.mChannelsPerFrame * bytesPerSample;
+	size_t requiredBytes = bytesPerFrame * ENCODER_FRAME_SAMPLES;
+
+	if (m_inputEnded)
+	{
+		while (m_audioFramePrebuf.size() < requiredBytes && resample(nullptr, 0) > 0)
+			;
+	}
+
+	av_init_packet(&m_avpktOut);
+	m_avpktOut.data = 0;
+	m_avpktOut.size = 0;
+	m_avpktOutUsed = 0;
+
+	if (m_inputEnded && m_audioFramePrebuf.size() > 0 && m_audioFramePrebuf.size() < requiredBytes)
+		requiredBytes = m_audioFramePrebuf.size();
+
+	if (m_inputEnded && m_audioFramePrebuf.size() == 0)
+		m_encoderDraining = true;
+
+	if (m_audioFramePrebuf.size() >= requiredBytes && !m_encoderDraining)
+	{
+		try
+		{
+			m_audioFrame->nb_samples = requiredBytes / bytesPerFrame;
+
+			err = avcodec_fill_audio_frame(m_audioFrame, m_destinationFormat.mChannelsPerFrame,
+					m_targetFormat, m_audioFramePrebuf.data(), requiredBytes, 1);
+			
+			if (err < 0)
+				throwFFMPEGError(err, "avcodec_fill_audio_frame()");
+
+#if 0
+			err = avcodec_encode_audio2(m_encoder, &m_avpktOut, m_audioFrame, &gotFrame);
+			if (err < 0)
+				throwFFMPEGError(err, "avcodec_encode_audio2()");
+#else
+			#warning TODO: test this new avcodec encoder code
+			err = avcodec_send_frame(m_encoder, m_audioFrame);
+
+			if (err < 0) {
+				if (err == AVERROR(EAGAIN)) {
+					// we need to consume more packets before sending
+					// TODO: handle this case properly.
+					//       for now, we just proceed to throw an error to avoid dropping a frame
+				}
+				if (err < 0) {
+					throwFFMPEGError(err, "avcodec_send_frame()");
+				}
+			}
+
+			err = avcodec_receive_packet(m_encoder, &m_avpktOut);
+
+			if (err < 0) {
+				gotFrame = false;
+				if (err == AVERROR(EAGAIN)) {
+					// we need to send more frames before consuming a packet
+					err = 0;
+				}
+				if (err < 0) {
+					throwFFMPEGError(err, "avcodec_receive_packet()");
+				}
+			} else {
+				gotFrame = true;
+			}
+#endif
+
+			m_audioFramePrebuf.consume(requiredBytes);
+
+#ifdef DEBUG_AUDIOCONVERTER
+			if (gotFrame)
+				m_encoderOutput.write((char*) m_avpktOut.data, m_avpktOut.size);
+#endif
+		}
+		catch (...)
+		{
+			m_audioFramePrebuf.consume(requiredBytes);
+			throw;
+		}
+
+		return gotFrame;
+	}
+	return false;
+}
+
+uint32_t AudioConverter::CAChannelCountToLayout(UInt32 numChannels)
+{
+	// TODO: this is just wild guessing
+	switch (numChannels)
+	{
+		case 1:
+			return AV_CH_LAYOUT_MONO;
+		case 2:
+			return AV_CH_LAYOUT_STEREO;
+		case 3:
+			return AV_CH_LAYOUT_SURROUND;
+		case 4:
+			return AV_CH_LAYOUT_4POINT0;
+		case 5:
+			return AV_CH_LAYOUT_4POINT1;
+		case 6:
+			return AV_CH_LAYOUT_5POINT1;
+		case 7:
+			return AV_CH_LAYOUT_6POINT1;
+		case 8:
+			return AV_CH_LAYOUT_7POINT1;
+		default:
+			return AV_CH_LAYOUT_STEREO;
+	}
+}
+
+enum AVSampleFormat AudioConverter::CACodecSampleFormat(const AudioStreamBasicDescription* desc)
+{
+	if (desc->mFormatID == kAudioFormatULaw || desc->mFormatID == kAudioFormatALaw)
+		return AV_SAMPLE_FMT_S16;
+
+	if (desc->mFormatFlags & kAudioFormatFlagIsFloat)
+	{
+		if (desc->mBitsPerChannel == 32)
+			return AV_SAMPLE_FMT_FLT;
+		else if (desc->mBitsPerChannel == 64)
+			return AV_SAMPLE_FMT_DBL;
+		else
+			return AV_SAMPLE_FMT_NONE;
+	}
+	else
+	{
+		
+		switch (desc->mBitsPerChannel)
+		{
+			case 8: return AV_SAMPLE_FMT_U8;
+			case 16: return AV_SAMPLE_FMT_S16;
+			case 24: return AV_SAMPLE_FMT_S32; // FIXME: 24-bits?
+			case 32: return AV_SAMPLE_FMT_S32;
+			default: return AV_SAMPLE_FMT_NONE;
+		}
+	}
+}
+
+enum AVCodecID AudioConverter::CACodecToAV(const AudioStreamBasicDescription* desc)
+{
+	switch (desc->mFormatID)
+	{
+		case kAudioFormatLinearPCM:
+		{
+			if (desc->mFormatFlags & kAudioFormatFlagIsFloat)
+			{
+				if (desc->mFormatFlags & kAudioFormatFlagIsBigEndian)
+				{
+					if (desc->mBitsPerChannel == 32)
+						return AV_CODEC_ID_PCM_F32BE;
+					else if (desc->mBitsPerChannel == 64)
+						return AV_CODEC_ID_PCM_F64BE;
+				}
+				else
+				{
+					if (desc->mBitsPerChannel == 32)
+						return AV_CODEC_ID_PCM_F32LE;
+					else if (desc->mBitsPerChannel == 64)
+						return AV_CODEC_ID_PCM_F64LE;
+				}
+			}
+			else if (desc->mFormatFlags & kAudioFormatFlagIsSignedInteger)
+			{
+				enum AVCodecID cid;
+
+				switch (desc->mBitsPerChannel)
+				{
+					case 8: cid = AV_CODEC_ID_PCM_S8; break;
+					case 16: cid = AV_CODEC_ID_PCM_S16LE; break;
+					case 24: cid = AV_CODEC_ID_PCM_S24LE; break;
+					case 32: cid = AV_CODEC_ID_PCM_S32LE; break;
+					default: return AV_CODEC_ID_NONE;
+				}
+
+				if (desc->mBitsPerChannel != 8 && desc->mFormatFlags & kAudioFormatFlagIsBigEndian)
+					cid = (enum AVCodecID)(int(cid)+1);
+				return cid;
+			}
+			else
+			{
+				enum AVCodecID cid;
+
+				switch (desc->mBitsPerChannel)
+				{
+					case 8: cid = AV_CODEC_ID_PCM_U8; break;
+					case 16: cid = AV_CODEC_ID_PCM_U16LE; break;
+					case 24: cid = AV_CODEC_ID_PCM_U24LE; break;
+					case 32: cid = AV_CODEC_ID_PCM_U32LE; break;
+					default: return AV_CODEC_ID_NONE;
+				}
+
+				if (desc->mBitsPerChannel != 8 && desc->mFormatFlags & kAudioFormatFlagIsBigEndian)
+					cid = (enum AVCodecID)(int(cid)+1);
+				return cid;
+			}
+			return AV_CODEC_ID_NONE;
+		}
+		case kAudioFormatULaw:
+			return AV_CODEC_ID_PCM_MULAW;
+		case kAudioFormatALaw:
+			return AV_CODEC_ID_PCM_ALAW;
+		case kAudioFormatMPEGLayer1:
+			return AV_CODEC_ID_MP1;
+		case kAudioFormatMPEGLayer2:
+			return AV_CODEC_ID_MP2;
+		case kAudioFormatMPEGLayer3:
+			return AV_CODEC_ID_MP3;
+		case kAudioFormatAC3:
+		case kAudioFormat60958AC3: // TODO: is this correct?
+			return AV_CODEC_ID_AC3;
+		case kAudioFormatEnhancedAC3:
+			return AV_CODEC_ID_EAC3;
+		case kAudioFormatOpus:
+			return AV_CODEC_ID_OPUS;
+		case kAudioFormatAppleIMA4:
+			return AV_CODEC_ID_ADPCM_IMA_DK4; // TODO: is this correct?
+		case kAudioFormatMPEG4AAC:
+		case kAudioFormatMPEG4AAC_HE:
+		case kAudioFormatMPEG4AAC_LD:
+		case kAudioFormatMPEG4AAC_ELD:
+		case kAudioFormatMPEG4AAC_ELD_SBR:
+		case kAudioFormatMPEG4AAC_ELD_V2:
+		case kAudioFormatMPEG4AAC_HE_V2:
+		case kAudioFormatMPEG4AAC_Spatial:
+			return AV_CODEC_ID_AAC;
+		case kAudioFormatMPEG4CELP:
+			return AV_CODEC_ID_QCELP; // TODO: is this correct?
+		case kAudioFormatAMR:
+			return AV_CODEC_ID_AMR_NB;
+		case kAudioFormatiLBC:
+			return AV_CODEC_ID_ILBC;
+		case kAudioFormatAppleLossless:
+			return AV_CODEC_ID_ALAC;
+		case kAudioFormatFLAC:
+			return AV_CODEC_ID_FLAC;
+		case kAudioFormatMicrosoftGSM:
+			return AV_CODEC_ID_GSM_MS;
+		case kAudioFormatMACE3:
+			return AV_CODEC_ID_MACE3;
+		case kAudioFormatMACE6:
+			return AV_CODEC_ID_MACE6;
+		default:
+			return AV_CODEC_ID_NONE;
+	}
+}
+

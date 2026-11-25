@@ -1,0 +1,88 @@
+/*
+This file is part of Darling.
+
+Copyright (C) 2016 Lubos Dolezel
+
+Darling is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Darling is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include <sys/types.h>
+
+#ifndef _DARLING_H_
+#define _DARLING_H_
+
+void showHelp(const char* argv0);
+void showVersion(const char* argv0);
+
+// Reports that this executable is not setuid root
+void missingSetuidRoot(void);
+
+// Returns ~/.darling with ~ expanded
+char* defaultPrefixPath(void);
+
+void setupWorkdir(void);
+
+void setupPrefix(void);
+
+int checkPrefixDir(void);
+
+// Creates the given directory, exit()ing if not possible
+void createDir(const char* path);
+
+int connectToShellspawn(void);
+void setupShellspawnEnv(int shellspawnFD);
+void setupWorkingDir(int shellspawnFD);
+void setupIDs(int shellspawnFD);
+void setupFDs(int fds[3], int* master);
+void spawnGo(int shellspawnFD, int fds[3], int master);
+void spawnShell(const char** argv);
+void spawnBinary(const char* binary, const char** argv);
+
+// Set up some environment variables
+// As well as the working directory
+// Called in the child process
+void setupChild(const char *curPath);
+
+// Returns the PID of the init process in prefix (in our namespace)
+// Returns 0 if no init is running
+pid_t getInitProcess(void);
+
+pid_t spawnInitProcess(void);
+
+// Asks the user how to set up the prefix after the current mode failed and records the answer
+// in the prefix. Returns nonzero if a mode was chosen; exits if none was.
+int chooseFsMode(void);
+
+void putInitPid(pid_t pidInit);
+void mapUids(pid_t pid);
+
+void spawnLaunchd(void);
+void darlingPreInit(void);
+
+void checkPrefixOwner(void);
+void ensureSystemAccounts(void);
+void ensureZoneinfoLink(void);
+void ensureGlobalPreferences(void);
+void ensureSharedTmpModes(void);
+
+int isModuleLoaded(void);
+
+void loadKernelModule(void);
+// Joins the checked mount namespace of the container's darlingserver
+void joinServerMountNamespace(pid_t pid);
+
+void setupCoredumpPattern(void);
+void setupUserHome(void);
+
+#endif

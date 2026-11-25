@@ -1,0 +1,26 @@
+#import <WebKit/WebView.h>
+
+NSString *WebElementImageKey = @"WebElementImage";
+NSString *WebElementImageURLKey = @"WebElementImageURL";
+NSString *WebElementLinkLabelKey = @"WebElementLinkLabel";
+NSString *WebElementLinkTargetFrameKey = @"WebElementTargetFrame";
+NSString *WebElementLinkTitleKey = @"WebElementLinkTitle";
+NSString *WebElementLinkURLKey = @"WebElementLinkURL";
+
+NSString *const WebViewDidChangeSelectionNotification = @"WebViewDidChangeSelectionNotification";
+
+NSString *WebViewProgressStartedNotification = @"WebProgressStartedNotification";
+NSString *WebViewProgressEstimateChangedNotification = @"WebProgressEstimateChangedNotification";
+NSString *WebViewProgressFinishedNotification = @"WebProgressFinishedNotification";
+
+NSString *WebElementDOMNodeKey = @"WebElementDOMNode";
+NSString *WebElementFrameKey = @"WebElementFrame";
+NSString *WebElementIsSelectedKey = @"WebElementIsSelected";
+
+NSString *WebActionElementKey = @"WebActionElementKey";
+NSString *WebActionModifierFlagsKey = @"WebActionModifierFlagsKey";
+NSString *WebActionOriginalURLKey = @"WebActionOriginalURLKey";
+
+// Class stub: Darling's WebKit has no legacy HTML view, so -isKindOfClass: checks against it fail.
+@implementation WebHTMLView
+@end

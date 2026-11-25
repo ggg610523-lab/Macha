@@ -1,0 +1,40 @@
+project(CoreVideo)
+
+remove_sdk_framework(CoreVideo)
+
+set(DYLIB_COMPAT_VERSION "1.2.0")
+set(DYLIB_CURRENT_VERSION "1.5.0")
+
+set(FRAMEWORK_VERSION "A")
+
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR})
+# CVOpenGLESTexture.h uses the GL types of OpenGLES.framework's headers.
+include_directories(${CMAKE_SOURCE_DIR}/src/frameworks/OpenGLES/include)
+
+generate_sdk_framework(CoreVideo
+    VERSION ${FRAMEWORK_VERSION}
+    HEADER "include/CoreVideo"
+)
+
+add_framework(CoreVideo
+    FAT
+    CURRENT_VERSION
+    VERSION ${FRAMEWORK_VERSION}
+
+    SOURCES
+	    src/constants.c
+	    src/CVPixelBuffer.c
+	    src/CVMetalTexture.c
+	    src/CVOpenGLTextureCache.c
+	    src/CVOpenGLESTextureCache.c
+	    src/CVHostTime.c
+        src/CVDisplayLink.mm
+
+    DEPENDENCIES
+        system
+        Foundation
+        CoreGraphics
+        IOSurface
+        OpenGL
+        cxx
+)

@@ -1,0 +1,721 @@
+project(darling-src)
+
+unset(CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
+unset(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+
+cmake_policy(SET CMP0005 NEW)
+
+set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(mig)
+include(pyc)
+
+# Force linker settings to match 3.30.5 behavior
+# Apple's ld64 in cctools does not support the `--dependency-file` flag
+set(CMAKE_CXX_LINKER_DEPFILE_SUPPORTED FALSE)
+set(CMAKE_C_LINKER_DEPFILE_SUPPORTED FALSE)
+set(CMAKE_CXX_LINK_DEPENDS_USE_LINKER FALSE)
+set(CMAKE_C_LINK_DEPENDS_USE_LINKER FALSE)
+
+set(CMAKE_CXX_LINK_LIBRARY_USING_WHOLE_ARCHIVE_SUPPORTED FALSE)
+set(CMAKE_C_LINK_LIBRARY_USING_WHOLE_ARCHIVE_SUPPORTED FALSE)
+
+set(CMAKE_CXX_LINKER_INFORMATION_LOADED FALSE)
+set(CMAKE_C_LINKER_INFORMATION_LOADED FALSE)
+set(CMAKE_CXX_USE_LINKER_INFORMATION FALSE)
+set(CMAKE_C_USE_LINKER_INFORMATION FALSE)
+
+#
+# start core components
+#
+# projects included here are strictly necessary for basic executables to function at all.
+# it should be very clear which projects belong here. a project should only be here if it
+# is one of the following or is necessary for one of the following:
+#   * darlingserver
+#   * dyld
+#   * mldr
+#   * libSystem
+#   * the host-side `darling` executable
+# this includes any build tools that are necessary to build any of those projects.
+#
+# these projects are always built
+#
+
+# What this first part installs runs on Linux (darlingserver, the launcher, mldr, the developer
+# ld): it goes to the install component core_native, which is packaged per host architecture.
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "core_native")
+
+#add_subdirectory(external/xcbuild)
+add_subdirectory(bsdln)
+
+add_definitions(
+	-DDARLING
+)
+
+set(DARLING TRUE)
+
+execute_process(
+	COMMAND git rev-parse --abbrev-ref HEAD
+	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+	OUTPUT_VARIABLE GIT_BRANCH
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+execute_process(
+	COMMAND git log -1 --format=%h
+	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+	OUTPUT_VARIABLE GIT_COMMIT_HASH
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+configure_file(include/darling-config.h.in include/darling-config.h)
+include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+include(compiler_include)
+GetCompilerInclude(COMPILER_INC_PATH)
+message(STATUS "Compiler include path detected as ${COMPILER_INC_PATH}")
+include_directories(SYSTEM ${COMPILER_INC_PATH})
+
+find_package(BISON)
+find_package(FLEX)
+
+set(DARLING_SDK_RELATIVE_PATH "Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk")
+set(DARLING_ROOT_RELATIVE_TO_SDK "../../../../../..")
+
+if (NOT DARLING_CROSS_BUILD)
+	add_subdirectory(external/cctools-port/cctools/ld64/src)
+	add_subdirectory(external/cctools-port/cctools/ar)
+	#add_subdirectory(external/cctools-port/cctools/as)
+	add_subdirectory(external/cctools-port/cctools/misc)
+
+	#add_subdirectory(util)
+	#add_subdirectory(libmach-o)
+	#add_subdirectory(libdyld)
+	add_subdirectory(buildtools)
+	add_subdirectory(hosttools)
+	add_subdirectory(libelfloader/wrapgen)
+else()
+	add_subdirectory(hosttools)
+
+	set(HOST_TOOLS_BUILD_DIR "${CMAKE_BINARY_DIR}/host-tools-build")
+	set(HOST_TOOLS_SRC_DIR "${CMAKE_BINARY_DIR}/host-tools-src")
+	file(MAKE_DIRECTORY "${HOST_TOOLS_SRC_DIR}")
+
+	file(WRITE "${HOST_TOOLS_SRC_DIR}/CMakeLists.txt" "
+cmake_minimum_required(VERSION 3.13)
+project(host_tools C CXX)
+add_subdirectory(\"${CMAKE_CURRENT_SOURCE_DIR}/external/cctools-port/cctools/ld64/src\" ld64)
+add_subdirectory(\"${CMAKE_CURRENT_SOURCE_DIR}/external/cctools-port/cctools/ar\" ar)
+add_subdirectory(\"${CMAKE_CURRENT_SOURCE_DIR}/external/cctools-port/cctools/misc\" misc)
+add_subdirectory(\"${CMAKE_CURRENT_SOURCE_DIR}/buildtools\" buildtools)
+add_subdirectory(\"${CMAKE_CURRENT_SOURCE_DIR}/libelfloader/wrapgen\" wrapgen)
+add_executable(rtsig \"${CMAKE_CURRENT_SOURCE_DIR}/startup/rtsig.c\")
+")
+
+	# Tools that run during the build are built for the build machine with
+	# CC_FOR_BUILD/CXX_FOR_BUILD or -DHOST_CC/-DHOST_CXX if given, otherwise
+	# with the Clang that builds Darling, which targets the build machine
+	# when no target is passed to it.
+	if (DEFINED ENV{CC_FOR_BUILD} AND NOT "$ENV{CC_FOR_BUILD}" STREQUAL "")
+		set(HOST_CC "$ENV{CC_FOR_BUILD}")
+	elseif (NOT DEFINED HOST_CC)
+		set(HOST_CC "${CMAKE_C_COMPILER}")
+	endif()
+
+	if (DEFINED ENV{CXX_FOR_BUILD} AND NOT "$ENV{CXX_FOR_BUILD}" STREQUAL "")
+		set(HOST_CXX "$ENV{CXX_FOR_BUILD}")
+	elseif (NOT DEFINED HOST_CXX)
+		set(HOST_CXX "${CMAKE_CXX_COMPILER}")
+	endif()
+
+	execute_process(
+		COMMAND ${CMAKE_COMMAND} -E env
+			--unset=CFLAGS --unset=CXXFLAGS --unset=LDFLAGS --unset=CPPFLAGS
+			# The host tools link against build-machine libraries. A cross build
+			# normally points pkg-config at the target's .pc files, so hide that
+			# setting from this build or it picks target libraries for host tools.
+			--unset=PKG_CONFIG_LIBDIR --unset=PKG_CONFIG_PATH
+			--unset=PKG_CONFIG_SYSROOT_DIR
+			CC=${HOST_CC} CXX=${HOST_CXX}
+			${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}"
+			-S "${HOST_TOOLS_SRC_DIR}"
+			-B "${HOST_TOOLS_BUILD_DIR}"
+			-DCMAKE_C_COMPILER=${HOST_CC}
+			-DCMAKE_CXX_COMPILER=${HOST_CXX}
+			-DCMAKE_BUILD_TYPE=Release
+			-DAPPLE_TARGET_TRIPLET_PRIMARY=${APPLE_TARGET_TRIPLET_PRIMARY}
+			-DAPPLE_ARCH_PRIMARY=${APPLE_ARCH_PRIMARY}
+			"-DDARLING_ARCHS=${DARLING_ARCHS}"
+			-DTARGET_ARM64=${TARGET_ARM64}
+			-DTARGET_x86_64=${TARGET_x86_64}
+			-DTARGET_i386=${TARGET_i386}
+			-DADHOC_CODESIGN=${ADHOC_CODESIGN}
+			-DDARLING_TOP_DIRECTORY=${CMAKE_SOURCE_DIR}
+		RESULT_VARIABLE host_tools_cfg_res
+	)
+	if (NOT host_tools_cfg_res EQUAL 0)
+		message(FATAL_ERROR "Failed to configure host tools for cross-compilation")
+	endif()
+
+	execute_process(
+		COMMAND ${CMAKE_COMMAND} -E env
+			--unset=CFLAGS --unset=CXXFLAGS --unset=LDFLAGS --unset=CPPFLAGS
+			${CMAKE_COMMAND} --build "${HOST_TOOLS_BUILD_DIR}"
+		RESULT_VARIABLE host_tools_build_res
+	)
+	if (NOT host_tools_build_res EQUAL 0)
+		message(FATAL_ERROR "Failed to build host tools for cross-compilation")
+	endif()
+
+	file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ld64/src")
+	file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar")
+	file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/misc")
+	file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/src/buildtools")
+	file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/src/libelfloader/wrapgen")
+
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/ld64/${APPLE_TARGET_TRIPLET_PRIMARY}-ld"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ld64/src/${APPLE_TARGET_TRIPLET_PRIMARY}-ld")
+	execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+		"${APPLE_TARGET_TRIPLET_PRIMARY}-ld"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ld64/src/ld")
+
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ar"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ar")
+	execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+		"${APPLE_TARGET_TRIPLET_PRIMARY}-ar"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/ar")
+
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ranlib"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ranlib")
+	execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+		"${APPLE_TARGET_TRIPLET_PRIMARY}-ranlib"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/ranlib")
+
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/misc/lipo"
+		"${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/misc/lipo")
+
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/buildtools/elfdep"
+		"${CMAKE_BINARY_DIR}/src/buildtools/elfdep")
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/buildtools/getuuid"
+		"${CMAKE_BINARY_DIR}/src/buildtools/getuuid")
+
+	execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+		"${HOST_TOOLS_BUILD_DIR}/wrapgen/wrapgen"
+		"${CMAKE_BINARY_DIR}/src/libelfloader/wrapgen/wrapgen")
+
+	# use_ld64 runs adhoc-sign through $<TARGET_FILE:adhoc-sign>
+	if (ADHOC_CODESIGN)
+		add_executable(adhoc-sign IMPORTED GLOBAL)
+		set_target_properties(adhoc-sign PROPERTIES
+			IMPORTED_LOCATION "${HOST_TOOLS_BUILD_DIR}/buildtools/adhoc-sign")
+	endif()
+
+	add_executable(iconset2icns IMPORTED GLOBAL)
+	set_target_properties(iconset2icns PROPERTIES
+		IMPORTED_LOCATION "${HOST_TOOLS_BUILD_DIR}/buildtools/iconset2icns")
+
+	# swift/prebuilt_install.cmake runs the build-machine copy of
+	# install_name_tool on the prebuilt dylibs. In a non-cross build the
+	# in-tree cctools misc directory provides this target.
+	add_executable(install_name_tool_host IMPORTED GLOBAL)
+	set_target_properties(install_name_tool_host PROPERTIES
+		IMPORTED_LOCATION "${HOST_TOOLS_BUILD_DIR}/misc/${APPLE_TARGET_TRIPLET_PRIMARY}-install_name_tool")
+
+	# startup/rtsig.h is generated from the build machine's C library; see
+	# src/startup/CMakeLists.txt
+	set(DARLING_HOST_RTSIG "${HOST_TOOLS_BUILD_DIR}/rtsig")
+
+	add_custom_target(${APPLE_TARGET_TRIPLET_PRIMARY}-ld)
+	add_custom_target(${APPLE_TARGET_TRIPLET_PRIMARY}-ar)
+	add_custom_target(ranlib)
+	add_custom_target(lipo)
+	add_custom_target(elfdep)
+	add_custom_target(getuuid)
+	add_custom_target(wrapgen)
+	add_custom_target(stuff)
+endif()
+# add the Linux build of libsimple now
+add_subdirectory(libsimple "${CMAKE_CURRENT_BINARY_DIR}/libsimple-linux")
+add_subdirectory(external/darlingserver)
+
+# host tests of the build-time ad-hoc signing (buildtools/adhoc-sign)
+if (ADHOC_CODESIGN AND TARGET darlingserver_dc_codesign)
+	add_subdirectory(${CMAKE_SOURCE_DIR}/tests/adhoc-sign ${CMAKE_CURRENT_BINARY_DIR}/adhoc-sign-tests)
+endif()
+
+# host tests of the ASTC decoder (src/libtexturecodec): plain C, they need no Darling build
+add_subdirectory(${CMAKE_SOURCE_DIR}/src/libtexturecodec/tests ${CMAKE_CURRENT_BINARY_DIR}/texturecodec-tests)
+
+add_subdirectory(startup)
+
+include_directories(${CMAKE_SOURCE_DIR}/basic-headers)
+
+add_subdirectory(external/bootstrap_cmds)
+
+# The rest is the Mach-O part of Darling, which is the same for every host architecture.
+# DARLING_BUILD_MACHO=OFF builds and installs only the Linux part above.
+if (NOT DARLING_BUILD_MACHO)
+	return()
+endif()
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "core")
+
+add_definitions(
+	-D__APPLE__
+	-D__DYNAMIC__
+	-D__MACH__
+	-D_DARWIN_C_SOURCE
+	-D_POSIX_C_SOURCE
+	-DDARWIN
+	-DTARGET_OS_MAC=1
+	-DPLATFORM_MacOSX
+)
+
+set(CMAKE_AR "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ar")
+set(CMAKE_RANLIB "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ranlib")
+#set(CMAKE_ASM_COMPILER "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/as/${APPLE_TARGET_TRIPLET_PRIMARY}-as")
+
+# set macOS deployment version
+string(REGEX REPLACE "-?-target[ =][^ ]+" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+string(REGEX REPLACE "-?-target[ =][^ ]+" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+string(REGEX REPLACE "-?-target[ =][^ ]+" "" CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS}")
+string(REGEX REPLACE "-?-target[ =][^ ]+" "" CMAKE_OBJC_FLAGS "${CMAKE_OBJC_FLAGS}")
+
+SET(CMAKE_C_FLAGS "-target ${APPLE_TARGET_TRIPLET_PRIMARY} ${CMAKE_C_FLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+SET(CMAKE_CXX_FLAGS "-target ${APPLE_TARGET_TRIPLET_PRIMARY} ${CMAKE_CXX_FLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+set(CMAKE_ASM_FLAGS "-target ${APPLE_TARGET_TRIPLET_PRIMARY} ${CMAKE_ASM_FLAGS}")
+set(CMAKE_OBJC_FLAGS "-target ${APPLE_TARGET_TRIPLET_PRIMARY} ${CMAKE_OBJC_FLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+
+add_definitions(-target ${APPLE_TARGET_TRIPLET_PRIMARY})
+
+# clang's default CPU for an arm64 Darwin target is the Apple M1, so without this
+# the Mach-O code uses ARMv8.4+ instructions (e.g. stlur from LRCPC2) and dies with
+# SIGILL on most non-Apple arm64 hosts: a Raspberry Pi 4 (Cortex-A72, ARMv8.0) or
+# Android phones with Cortex-A76/A78 cores (ARMv8.2). ARMv8.0 is what Linux and
+# Android guarantee; raise it to trade portability for speed. It has to be -mcpu:
+# for Darwin triples -march leaves "-target-cpu apple-m1" in place, and the CPU's
+# features still apply. Hand-written assembly is left alone: it states its own
+# instructions (and may check for them at run time), the CPU only gates what the
+# assembler accepts. With other slices next to arm64 the option goes to the arm64
+# compile only (-Xarch_arm64), so the Intel slices keep their own CPU.
+if (TARGET_ARM64)
+	set(DARLING_ARM64_CPU "generic" CACHE STRING "Baseline -mcpu for compiled arm64 Mach-O code")
+	if (DARLING_ARCHS STREQUAL "arm64")
+		set(_darling_arm64_cpu_flag "-mcpu=${DARLING_ARM64_CPU}")
+	else()
+		set(_darling_arm64_cpu_flag "-Xarch_arm64 -mcpu=${DARLING_ARM64_CPU}")
+	endif()
+	foreach(lang C CXX OBJC OBJCXX)
+		set(CMAKE_${lang}_FLAGS "${CMAKE_${lang}_FLAGS} ${_darling_arm64_cpu_flag}")
+	endforeach()
+endif()
+
+include(darling_lib)
+include(darling_static_lib)
+include(darling_bundle)
+include(darling_prefpane)
+
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include)
+
+include_directories(
+	${CMAKE_SOURCE_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include
+	${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include
+	${CMAKE_SOURCE_DIR}/framework-include
+	${CMAKE_SOURCE_DIR}/framework-private-include
+)
+
+include_directories(AFTER
+	${CMAKE_CURRENT_SOURCE_DIR}/external/lkm/include
+	${CMAKE_CURRENT_SOURCE_DIR}/libDiagnosticMessagesClient/include
+	${CMAKE_CURRENT_SOURCE_DIR}/libMobileGestalt/include
+	${CMAKE_CURRENT_SOURCE_DIR}/lib/include
+
+	# necessary because this is the expected behavior when using `xml2-config --cflags`
+	# it adds `$sdk_dir/libxml2` to the include path
+	${CMAKE_SOURCE_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include/libxml2
+	${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include/libxml2
+)
+
+# add the Mach-O build of libsimple now
+add_subdirectory(libsimple "${CMAKE_CURRENT_BINARY_DIR}/libsimple-darling")
+
+add_subdirectory(external/libkqueue)
+
+# needs to come before libplatform because it generates mig headers that libplatform needs
+add_subdirectory(external/xnu/darling/src/libsystem_kernel)
+
+add_subdirectory(external/libplatform)
+add_subdirectory(external/libpthread)
+add_subdirectory(external/libtrace)
+add_subdirectory(external/libc)
+add_subdirectory(vchroot)
+
+add_subdirectory(lib)
+
+# libstdc++ doesn't use the libc++ headers included below
+add_subdirectory(external/libstdcxx)
+
+include_directories(BEFORE
+	${CMAKE_SOURCE_DIR}/src/external/libcxx/include
+)
+
+add_definitions(-D_LIBC_NO_FEATURE_VERIFICATION)
+
+add_subdirectory(launchd)
+add_subdirectory(libm)
+add_subdirectory(external/dyld)
+add_subdirectory(external/libxpc)
+add_subdirectory(libgcc)
+add_subdirectory(external/copyfile)
+add_subdirectory(external/Libinfo)
+add_subdirectory(external/compiler-rt/lib/builtins)
+add_subdirectory(external/libnotify)
+add_subdirectory(duct/src)
+add_subdirectory(external/syslog)
+add_subdirectory(external/libclosure)
+add_subdirectory(external/keymgr)
+add_subdirectory(external/libunwind)
+add_subdirectory(external/libmalloc)
+add_subdirectory(external/coretls)
+add_subdirectory(libsystem_coreservices)
+add_subdirectory(libsystem_featureflags)
+add_subdirectory(external/removefile)
+add_subdirectory(quarantine)
+add_subdirectory(sandbox)
+add_subdirectory(external/corecrypto)
+add_subdirectory(external/commoncrypto)
+add_subdirectory(networkextension)
+add_subdirectory(libcache)
+add_subdirectory(external/configd)
+add_subdirectory(external/libsystem)
+add_subdirectory(external/objc4/runtime)
+add_subdirectory(external/corefoundation)
+add_subdirectory(external/icu/icuSources)
+add_subdirectory(external/csu)
+add_subdirectory(external/libresolv)
+add_subdirectory(external/usertemplate)
+add_subdirectory(external/bsm)
+add_subdirectory(external/zlib)
+# shellspawn can actually spawn any executable we want within the prefix,
+# so we include it in core to allow executables to be executed with the `darling` command.
+add_subdirectory(shellspawn)
+# hands the system preferences to darlingserver before shellspawn accepts commands
+add_subdirectory(prefsd)
+# imports the host's CA certificates into the guest's System keychain
+# Security and build-security-certificates are available with the system component.
+if (COMPONENT_system)
+	add_subdirectory(hostcerts)
+endif()
+
+# typically considered CLI components, but required by launchctl (which is necessary for launchd to bootstrap)
+add_subdirectory(external/libedit)
+add_subdirectory(external/ncurses)
+
+#
+# end core components
+#
+# the rest of the projects are not all neatly separated like the core components are because
+# some projects build multiple targets which may be part of different components
+#
+
+if (COMPONENT_system)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "system")
+
+	add_subdirectory(external/libiconv)
+	add_subdirectory(external/bzip2)
+	add_subdirectory(external/libressl-2.8.3)
+	add_subdirectory(external/libressl-3.3.6)
+	add_subdirectory(external/libarchive/libarchive)
+	add_subdirectory(external/liblzma)
+	add_subdirectory(external/OpenDirectory)
+	add_subdirectory(external/openssl_certificates)
+	add_subdirectory(external/bash)
+	add_subdirectory(external/zsh)
+	add_subdirectory(external/tcsh)
+	add_subdirectory(external/files)
+	add_subdirectory(external/crontabs)
+	add_subdirectory(external/swift)
+endif()
+
+if (COMPONENT_cli)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli")
+
+	add_subdirectory(external/darling-dmg)
+	add_subdirectory(DiskImageMounter)
+	add_subdirectory(Finder)
+	add_subdirectory(external/bomutils)
+	add_subdirectory(external/libutil)
+	add_subdirectory(xtrace)
+	add_subdirectory(external/libxslt)
+	add_subdirectory(external/openssl/src)
+	add_subdirectory(external/nghttp2)
+	add_subdirectory(external/passwordserver_sasl)
+	add_subdirectory(external/curl)
+	add_subdirectory(external/OpenLDAP)
+	add_subdirectory(external/pcre)
+	add_subdirectory(external/libpcap)
+	add_subdirectory(external/libtelnet)
+	add_subdirectory(external/remote_cmds)
+	add_subdirectory(external/IOKitTools)
+	add_subdirectory(external/apr)
+	add_subdirectory(xcselect)
+	add_subdirectory(external/file/file)
+	add_subdirectory(external/shell_cmds)
+	add_subdirectory(external/file_cmds)
+	add_subdirectory(external/text_cmds)
+	add_subdirectory(external/adv_cmds)
+	add_subdirectory(external/network_cmds)
+	add_subdirectory(external/system_cmds)
+	add_subdirectory(external/mail_cmds)
+	add_subdirectory(external/doc_cmds)
+	add_subdirectory(external/basic_cmds)
+	add_subdirectory(external/misc_cmds)
+	add_subdirectory(external/patch_cmds)
+	add_subdirectory(external/less)
+	add_subdirectory(external/grep)
+	add_subdirectory(external/awk)
+	add_subdirectory(external/groff)
+	add_subdirectory(external/nano)
+	add_subdirectory(external/man)
+	add_subdirectory(external/bc)
+	add_subdirectory(external/zip)
+	add_subdirectory(external/installer)
+	add_subdirectory(external/bind9)
+	add_subdirectory(external/netcat)
+	add_subdirectory(external/gpatch)
+	add_subdirectory(external/gnudiff)
+	add_subdirectory(external/openssh)
+	add_subdirectory(external/top)
+	add_subdirectory(external/lsof)
+	add_subdirectory(external/screen)
+	add_subdirectory(unxip)
+	add_subdirectory(external/rsync)
+	add_subdirectory(external/DSTools)
+	add_subdirectory(libsysmon)
+	add_subdirectory(PlistBuddy)
+	add_subdirectory(libquit)
+	add_subdirectory(libScreenReader)
+	# lzfse's round-trip tests run its command-line tool, which is built for
+	# the prefix and cannot run on the host
+	set(LZFSE_DISABLE_TESTS TRUE)
+	add_subdirectory(external/lzfse)
+	add_subdirectory(clt)
+	add_subdirectory(diskutil)
+	add_subdirectory(ditto)
+
+	# these aren't used by anything we build (they're just included because they're also present in macOS)
+	# TODO: maybe we should introduce another component (e.g. `lib_stock`) for libraries we don't need but are expected in a stock macOS installation.
+	add_subdirectory(external/libressl-2.2.9)
+	add_subdirectory(external/libressl-2.5.5)
+	add_subdirectory(external/libressl-2.6.5)
+endif()
+
+if (COMPONENT_python OR COMPONENT_ruby)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "ffi")
+	add_subdirectory(external/libffi)
+endif()
+
+if (COMPONENT_cli_dev)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_dev")
+	add_subdirectory(libgmalloc)
+endif()
+
+if (COMPONENT_cli OR COMPONENT_dev_gui_common)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_gui_common")
+
+	add_subdirectory(external/libxml2)
+	# Foundation links and re-exports CoreAutoLayout (the Auto Layout classes, a cocotron framework), so it is built with
+	# Foundation even when the GUI components are not
+	add_subdirectory(external/cocotron/CoreAutoLayout)
+	add_subdirectory(external/foundation)
+	add_subdirectory(external/cfnetwork/src)
+	add_subdirectory(external/sqlite)
+	add_subdirectory(external/openpam)
+	add_subdirectory(external/energytrace)
+	add_subdirectory(external/xnu/libkern/kxld)
+	add_subdirectory(external/IOKitUser)
+	add_subdirectory(external/xar)
+	add_subdirectory(libpmenergy)
+	add_subdirectory(external/DirectoryService)
+	add_subdirectory(libacm)
+	add_subdirectory(libaks)
+	add_subdirectory(libcompression)
+	add_subdirectory(external/Heimdal)
+	add_subdirectory(libDiagnosticMessagesClient)
+	add_subdirectory(libsandbox)
+	add_subdirectory(libIOReport)
+	add_subdirectory(libLaunchServicesSupport)
+	add_subdirectory(libsystemstats)
+	add_subdirectory(runningboardd)
+	add_subdirectory(opendirectory_internal)
+	add_subdirectory(external/fmdb)
+	add_subdirectory(external/libnetwork)
+	add_subdirectory(libMobileGestalt)
+	add_subdirectory(external/MITKerberosShim)
+	add_subdirectory(MobileKeyBag)
+	# launchd's event monitor; needs CoreServices (FSEvents)
+	add_subdirectory(eventmonitor)
+	add_subdirectory(usernoted)
+endif()
+
+if (COMPONENT_iokitd)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME iokitd)
+	add_subdirectory(external/iokitd)
+endif()
+
+if (COMPONENT_dev_gui_common)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_dev_gui_common")
+
+	add_subdirectory(libaccessibility)
+	add_subdirectory(external/openjdk) # *should* be in `cli` component, but requires AppKit
+endif()
+
+if (COMPONENT_cli_extra)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_extra")
+
+	add_subdirectory(external/gnutar/gnutar)
+endif()
+
+if (COMPONENT_gui)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "gui")
+
+	add_subdirectory(external/cocotron)
+
+	# /System/Library/Fonts
+	add_subdirectory(fonts)
+
+	add_subdirectory(CoreAudio)
+	add_subdirectory(external/cups)
+	add_subdirectory(pboard)
+	add_subdirectory(distnoted)
+	add_subdirectory(settingsd)
+	add_subdirectory(locationd)
+
+	# /Applications
+	add_subdirectory(external/TextEdit)
+	add_subdirectory(external/Console)
+	add_subdirectory(SystemPreferences)
+	add_subdirectory(prefpanes)
+
+	# not currently used by anything we build
+	add_subdirectory(external/dbuskit)
+endif()
+
+if (COMPONENT_python)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "python")
+
+	add_subdirectory(external/python_modules)
+	add_subdirectory(external/python/2.7/Python-2.7.16)
+endif()
+
+if (COMPONENT_cli OR COMPONENT_python)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_python_common")
+
+	add_subdirectory(external/BerkeleyDB)
+	add_subdirectory(external/expat)
+endif()
+
+if (COMPONENT_gui_frameworks AND COMPONENT_gui_stubs AND COMPONENT_python)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "pyobjc")
+
+	# TODO: pyobjc should only build individual modules if the respective components are enabled.
+	#       right now, it's all-or-nothing.
+	add_subdirectory(external/pyobjc)
+endif()
+
+if (COMPONENT_ruby)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "ruby")
+
+	add_subdirectory(external/ruby)
+endif()
+
+if (COMPONENT_perl)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "perl")
+
+	add_subdirectory(external/perl)
+endif()
+
+#add_subdirectory(external/mDNSResponder)
+#add_subdirectory(external/OpenAL)
+#add_subdirectory(VideoDecodeAcceleration)
+#add_subdirectory(external/glut)
+
+# not a core component, but we always add it regardless of the components that are enabled;
+# it has its own component checks to determine which libraries to generate wrappers for.
+# the shared loader of the dbus wrapper (see native); static, so it has no components
+add_subdirectory(libdarlingdbus)
+# the texture decoder of ImageIO; static, so it has no components
+add_subdirectory(libtexturecodec)
+add_subdirectory(native)
+
+# has its own component checks
+add_subdirectory(external/vim)
+
+# has its own component checks
+add_subdirectory(tools)
+
+# these have their own component checks on a per-framework basis
+add_subdirectory(frameworks)
+add_subdirectory(private-frameworks)
+
+# Subprojects after this line need C++ headers
+
+include_directories(BEFORE
+	${CMAKE_CURRENT_SOURCE_DIR}/external/libcxxabi/include
+)
+
+#
+# start core components with C++
+#
+
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "core")
+
+add_subdirectory(external/libcxxabi)
+add_subdirectory(external/libcxx)
+
+add_subdirectory(external/libdispatch)
+add_subdirectory(external/cctools)
+
+#
+# end core components with C++
+#
+
+if (COMPONENT_cli OR COMPONENT_dev_gui_common)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_gui_common")
+
+	add_subdirectory(external/SmartCardServices)
+	add_subdirectory(external/security)
+	add_subdirectory(external/SecurityTokend)
+endif()
+
+if (COMPONENT_cli)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli")
+
+	add_subdirectory(external/dtrace)
+	add_subdirectory(external/libauto)
+endif()
+
+if (COMPONENT_dev_gui_common)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "cli_dev_gui_common")
+
+	add_subdirectory(external/metal)
+endif()
+
+if (COMPONENT_jsc OR COMPONENT_webkit)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "jsc_webkit_common")
+
+	add_subdirectory(external/WTF)
+	add_subdirectory(external/bmalloc)
+endif()
+
+if (COMPONENT_jsc)
+	set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "jsc")
+
+	add_subdirectory(external/JavaScriptCore)
+endif()
+
+#add_subdirectory(external/WebCore)

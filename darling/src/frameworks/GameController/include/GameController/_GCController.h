@@ -1,0 +1,49 @@
+/*
+ This file is part of Darling.
+
+ Copyright (C) 2019 Lubos Dolezel
+
+ Darling is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ Darling is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with Darling.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include <Foundation/Foundation.h>
+
+@interface _GCController : NSObject
+
+@end
+
+/* HID usage names for controller elements. Games index their button arrays with these, so
+ * the symbols must resolve even though no controller is ever attached. */
+extern NSString *const GCInputButtonA;
+extern NSString *const GCInputButtonB;
+extern NSString *const GCInputButtonX;
+extern NSString *const GCInputButtonY;
+extern NSString *const GCInputButtonMenu;
+extern NSString *const GCInputButtonOptions;
+extern NSString *const GCInputLeftShoulder;
+extern NSString *const GCInputRightShoulder;
+extern NSString *const GCInputLeftTrigger;
+extern NSString *const GCInputRightTrigger;
+extern NSString *const GCInputLeftThumbstick;
+extern NSString *const GCInputDirectionPad;
+extern NSString *const GCInputLeftThumbstickButton;
+extern NSString *const GCInputRightThumbstick;
+extern NSString *const GCInputRightThumbstickButton;
+extern NSString *const GCInputXboxPaddleOne;
+extern NSString *const GCInputXboxPaddleTwo;
+extern NSString *const GCInputXboxPaddleThree;
+extern NSString *const GCInputXboxPaddleFour;
+extern NSString *const GCInputDualShockTouchpadOne;
+extern NSString *const GCInputDualShockTouchpadTwo;
+extern NSString *const GCInputDualShockTouchpadButton;

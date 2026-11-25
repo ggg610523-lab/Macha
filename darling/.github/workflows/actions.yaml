@@ -1,0 +1,166 @@
+name: Darling CI
+
+on: [push, pull_request]
+
+# Supersede in-flight runs for the same branch/PR, but never cancel a build of
+# the default branch -- those runs publish the daily packages.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+jobs:
+  # Builds of branches in this repository wait for a maintainer's approval in
+  # the ci-approval environment. Pushes to the default branch run without it,
+  # and pull requests from forks are left to the repository's fork approval
+  # setting, so they aren't approved twice.
+  approval:
+    if: >-
+      !(github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+    runs-on: ubuntu-latest
+    environment: ci-approval
+    steps:
+    - run: echo "Approved"
+
+  build-deb:
+    needs: approval
+    if: ${{ !cancelled() && (needs.approval.result == 'success' || needs.approval.result == 'skipped') }}
+    # The Architecture: all packages (the Mach-O part, with i386, x86_64 and
+    # arm64 slices) and the amd64 darling-core-native.
+    name: Build DEBs
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Darling
+      uses: actions/checkout@v4
+
+    # actions/checkout fetches submodules one at a time, which is slow with the
+    # number of submodules this repo has. Fetch them ourselves in parallel.
+    - name: Checkout submodules
+      run: git submodule update --init --recursive --depth 1 --jobs 8
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update && sudo apt-get install devscripts equivs debhelper ccache
+        sudo mk-build-deps -i -r -t "apt-get --no-install-recommends -y" debian/control
+
+    # see https://github.com/actions/virtual-environments/issues/2606#issuecomment-772683150
+    - name: Free up space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+
+    # debuild runs the build with a scrubbed environment, so configure ccache
+    # system-wide rather than relying on CCACHE_* reaching the compiler.
+    # The mtime sloppiness settings matter in CI: a fresh checkout gives every
+    # file a current timestamp, which would otherwise make ccache refuse to
+    # cache the results. max_size has to hold a whole build's objects: when the
+    # cache is smaller, ccache evicts entries while it writes new ones, and the
+    # later part of every build misses.
+    - name: Configure ccache
+      run: |
+        sudo tee /etc/ccache.conf > /dev/null <<EOF
+        cache_dir = ${HOME}/.ccache
+        max_size = 5G
+        compiler_check = content
+        sloppiness = time_macros,include_file_mtime,include_file_ctime
+        EOF
+
+    - name: Restore ccache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.ccache
+        key: ccache-deb-amd64-${{ github.ref_name }}-${{ github.run_id }}
+        restore-keys: |
+          ccache-deb-amd64-${{ github.event.repository.default_branch }}-
+
+    - name: Build DEBs
+      run: |
+        ccache --zero-stats
+        ./tools/debian/make-deb
+
+    - name: ccache statistics
+      if: always()
+      run: ccache --show-stats --verbose
+
+    # Only pushes to the default branch save a cache; every other run restores
+    # the default branch's. The repository's cache storage is limited, and a
+    # cache per branch and pull request would evict the one all builds share.
+    # Saved even when the build fails, so that a long build that dies near the
+    # end still leaves its object files behind for the next run.
+    - name: Save ccache
+      if: always() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.ccache
+        key: ccache-deb-amd64-${{ github.ref_name }}-${{ github.run_id }}
+
+    - name: Move DEBs
+      run: |
+        mkdir dist && mv ../*.deb dist
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4.1.0
+      with:
+        name: debs
+        path: dist/
+
+    # dpkg refuses to install a package over another one's files
+    - name: Check that no two DEBs ship the same file unless they conflict
+      run: python3 tests/deb-file-overlaps.py dist/*.deb
+
+  build-dsc:
+    needs: approval
+    if: ${{ !cancelled() && (needs.approval.result == 'success' || needs.approval.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Darling
+      uses: actions/checkout@v4
+
+    # actions/checkout fetches submodules one at a time, which is slow with the
+    # number of submodules this repo has. Fetch them ourselves in parallel.
+    - name: Checkout submodules
+      run: git submodule update --init --recursive --depth 1 --jobs 8
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update && sudo apt-get install devscripts equivs debhelper
+
+    - name: Build DSCs
+      run: |
+        ./tools/debian/make-deb --dsc
+
+    - name: Move DSCs
+      run: |
+        mkdir source && mv ../*~$(lsb_release -cs)[-._]* source
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4.1.0
+      with:
+        name: 'deb-source'
+        path: source/
+
+  create-source-artifact:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Darling
+      uses: actions/checkout@v4
+      with:
+        path: source/darling
+
+    - name: Checkout submodules
+      working-directory: source/darling
+      run: git submodule update --init --recursive --depth 1 --jobs 8
+
+    - name: Compress source
+      run: |
+        mkdir -v archive
+        tar --create --use-compress-program="xz -9e" --verbose \
+            --file archive/darling-source.tar.xz \
+            --exclude=.git --exclude=.gitmodules --exclude=.gitignore \
+            --directory=source \
+            darling
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4.1.0
+      with:
+        name: 'source'
+        path: archive/

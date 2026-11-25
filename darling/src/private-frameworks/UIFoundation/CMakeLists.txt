@@ -1,0 +1,148 @@
+project(UIFoundation)
+
+set(DYLIB_COMPAT_VERSION "1.0.0")
+set(DYLIB_CURRENT_VERSION "547.5.0")
+set(FRAMEWORK_VERSION "A")
+
+remove_sdk_framework(UIFoundation
+    PRIVATE
+)
+
+generate_sdk_framework(UIFoundation
+    VERSION ${FRAMEWORK_VERSION}
+    HEADER "include/UIFoundation"
+    PRIVATE
+)
+
+add_framework(UIFoundation
+    FAT
+    CURRENT_VERSION
+    PRIVATE
+    VERSION ${FRAMEWORK_VERSION}
+
+    SOURCES
+        src/UIFoundation.m
+        src/UIFoundationGraphicsContext.m
+        src/NSParagraphStyle.m
+        src/NSMutableParagraphStyle.m
+        src/NSTextTab.m
+        src/NSTextList.m
+        src/NSTextBlock.m
+        src/NSTextTable.m
+        src/NSTextTableBlock.m
+        src/NSGlyphInfo.m
+        src/NSTextAttributeKeys.m
+        src/NSShadow.m
+        src/NSTextAttachment.m
+        src/NSTextStorage.m
+        src/NSTextStorage_concrete.m
+        src/NSGlyphGenerator.m
+        src/NSGlyphPacking.m
+        src/NSRangeArray.m
+        src/NSBidiHelper.m
+        src/NSTypesetter.m
+        src/NSTypesetter_concrete.m
+        src/NSATSTypesetter.m
+        src/NSTextContainer.m
+        src/NSLayoutManager.m
+        src/NSTextKit2.m
+        src/NSFontAssetRequest.m
+        src/NSCollectionViewData.m
+        src/NSCoreTypesetter.m
+        src/NSExtraLMData.m
+        src/NSLayoutManagerTextBlockHelper.m
+        src/NSLayoutManagerTextBlockRowArrayCache.m
+        src/UINibCoderValue.m
+        src/NSStorage.m
+        src/NSStringDrawingContext.m
+        src/_NSCachedAttributedString.m
+        src/NSStringDrawingTextStorage.m
+        src/NSStringDrawingTextStorageSettings.m
+        src/NSZipTextReader.m
+        src/_NSCollectionViewItemKey.m
+        src/_UICollectionViewTrackedValueItem.m
+        src/_UICollectionViewTrackedValue.m
+        src/UICollectionViewAnimation.m
+        src/NSTextAlternatives.m
+        src/UICollectionViewLayoutAttributesAuxiliary.m
+        src/NSCollectionViewUpdateItem.m
+        src/_NSCollectionViewCore.m
+        src/UIViewAnimationContext.m
+        src/NSTextAttachmentViewProvider.m
+        src/_UIPointVector.m
+        src/UIPointFIFO.m
+        src/UIBoxcarFilterPointFIFO.m
+        src/UIQuadCurvePointFIFO.m
+        src/NSCTFontDescriptor.m
+        src/NSMutableFontDescriptor.m
+        src/NSTextLineFragment.m
+        src/UICollectionViewIndexMapper.m
+        src/NSCollectionViewUpdate.m
+        src/NSCollectionViewTransitionLayout.m
+        src/NSConcreteNotifyingMutableAttributedString.m
+        src/_NSTextStorageSideData.m
+        src/NSConcreteTextStorage.m
+        src/_NSFlowLayoutItem.m
+        src/_NSFlowLayoutSection.m
+        src/_NSFlowLayoutRow.m
+        src/_NSFlowLayoutInfo.m
+        src/NSTextBlockLayoutHelper.m
+        src/NSRTFReaderTableState.m
+        src/NSRTFReader.m
+        src/NSRTFWriter.m
+        src/NSSubstituteWebResource.m
+        src/NSHTMLWebDelegate.m
+        src/NSHTMLReader.m
+        src/NSHTMLWriter.m
+        src/NSMutableIndexPath.m
+        src/NSTempAttributeDictionary.m
+        src/NSAttributeDictionary.m
+        src/NSAttributeDictionaryEnumerator.m
+        src/UINibStringIDTable.m
+        src/__NSFontTypefaceInfo.m
+        src/__NSSharedFontInstanceInfo.m
+        src/NSCTFont.m
+        src/NSParagraphArbitrator.m
+        src/UINibDecoder.m
+        src/NSIdentityGlyphInfo.m
+        src/NSGlyphNameGlyphInfo.m
+        src/NSCIDGlyphInfo.m
+        src/NSCTGlyphInfo.m
+        src/NSParagraphStyleExtraData.m
+        src/NSOpenDocumentReader.m
+        src/NSOpenDocumentWriter.m
+        src/_NSUIAnimator.m
+        src/NSRunStorage.m
+        src/NSIdRunStorage.m
+        src/NSInsertionPointHelper.m
+        src/NSDocFormatReader.m
+        src/NSDocFormatWriter.m
+        src/NSTextLayoutFragment.m
+        src/_NSCollectionViewPrefetchingContext.m
+        src/_UICollectionViewPrefetchItem.m
+        src/NSCollectionViewFlowLayoutInvalidationContext.m
+        src/UICollectionViewFlowLayoutAuxiliary.m
+        src/_NSATSTypesetterGuts.m
+        src/__NSATSStringSegment.m
+        src/NSATSGlyphStorage.m
+        src/NSATSLineFragment.m
+        src/NSLineFragmentRenderingContext.m
+        src/NSSingleLineTypesetter.m
+        src/UINibEncoder.m
+        src/NSConcreteGlyphGenerator.m
+        src/NSWordMLReader.m
+        src/NSWordMLWriter.m
+
+        src/NSCollectionViewLayout.m
+        src/NSCollectionViewFlowLayout.m
+        src/NSCollectionViewLayoutAttributes.m
+        src/NSCollectionViewLayoutInvalidationContext.m
+        src/NSIndexPathCollectionViewAdditions.m
+
+    DEPENDENCIES
+        system
+        objc
+        Foundation
+        CoreFoundation
+        CoreGraphics
+)

@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if [ $# != 1 ]; then
+	echo "Unpack a XIP file"
+	echo "Usage: unxip <xip-file>"
+	exit 1
+fi
+
+/usr/libexec/xip_extract_cpio "$1" | LC_ALL=C cpio -d -i

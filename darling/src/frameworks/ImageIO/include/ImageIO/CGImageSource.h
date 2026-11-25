@@ -1,0 +1,64 @@
+/* Copyright (c) 2008 Christopher J. W. Lloyd
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
+
+#import <ImageIO/ImageIOBase.h>
+#import <CoreFoundation/CFDictionary.h>
+#import <CoreFoundation/CFURL.h>
+
+typedef struct CF_BRIDGED_TYPE(id) O2ImageSource *CGImageSourceRef;
+
+#import <CoreGraphics/CGImage.h>
+#import <CoreGraphics/CGDataProvider.h>
+
+CF_IMPLICIT_BRIDGING_ENABLED
+
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceShouldAllowFloat;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceShouldCache;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceCreateThumbnailFromImageIfAbsent;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceCreateThumbnailFromImageAlways;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceThumbnailMaxPixelSize;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceCreateThumbnailWithTransform;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceShouldCacheImmediately;
+IMAGEIO_EXTERN const CFStringRef kCGImageSourceTypeIdentifierHint;
+
+IMAGEIO_EXTERN CGImageSourceRef CGImageSourceCreateWithData(CFDataRef data, CFDictionaryRef options);
+IMAGEIO_EXTERN CGImageSourceRef CGImageSourceCreateWithURL(CFURLRef url, CFDictionaryRef options);
+
+IMAGEIO_EXTERN CFStringRef CGImageSourceGetType(CGImageSourceRef self);
+
+IMAGEIO_EXTERN size_t CGImageSourceGetCount(CGImageSourceRef self);
+
+IMAGEIO_EXTERN CGImageRef CGImageSourceCreateImageAtIndex(CGImageSourceRef self, size_t index, CFDictionaryRef options);
+IMAGEIO_EXTERN CFDictionaryRef CGImageSourceCopyPropertiesAtIndex(CGImageSourceRef self, size_t index, CFDictionaryRef options);
+IMAGEIO_EXTERN CFDictionaryRef CGImageSourceCopyProperties(CGImageSourceRef self, CFDictionaryRef options);
+IMAGEIO_EXTERN CGImageRef CGImageSourceCreateThumbnailAtIndex(CGImageSourceRef self, size_t index, CFDictionaryRef options);
+
+IMAGEIO_EXTERN CGImageSourceRef CGImageSourceCreateWithDataProvider(CGDataProviderRef provider, CFDictionaryRef options);
+
+IMAGEIO_EXTERN const CFStringRef kCGImageAuxiliaryDataTypeDepth;
+IMAGEIO_EXTERN const CFStringRef kCGImageAuxiliaryDataTypeDisparity;
+IMAGEIO_EXTERN const CFStringRef kCGImageAuxiliaryDataTypeHDRGainMap;
+IMAGEIO_EXTERN const CFStringRef kCGImageAuxiliaryDataTypeISOGainMap;
+IMAGEIO_EXTERN const CFStringRef kCGImageAuxiliaryDataInfoData;
+IMAGEIO_EXTERN const CFStringRef kCGImageAuxiliaryDataInfoDataDescription;
+
+IMAGEIO_EXTERN CFDictionaryRef CGImageSourceCopyAuxiliaryDataInfoAtIndex(CGImageSourceRef isrc, size_t index, CFStringRef auxiliaryImageDataType);
+
+typedef CF_ENUM(int32_t, CGImageSourceStatus) {
+    kCGImageStatusUnexpectedEOF = -5,
+    kCGImageStatusInvalidData = -4,
+    kCGImageStatusUnknownType = -3,
+    kCGImageStatusReadingHeader = -2,
+    kCGImageStatusIncomplete = -1,
+    kCGImageStatusComplete = 0
+};
+
+IMAGEIO_EXTERN CFArrayRef CGImageSourceCopyTypeIdentifiers(void);
+IMAGEIO_EXTERN CGImageSourceStatus CGImageSourceGetStatus(CGImageSourceRef isrc);
+
+CF_IMPLICIT_BRIDGING_DISABLED

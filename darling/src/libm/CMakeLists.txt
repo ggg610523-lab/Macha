@@ -1,0 +1,397 @@
+project(darling-libsystem_m)
+
+cmake_minimum_required(VERSION 3.13)
+enable_language(C ASM)
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D__DARWIN_UNIX03 -fPIC -w -ggdb -O0 -DBUILDING_FOR_CARBONCORE_LEGACY -funroll-loops") # -DBUILDING_FOR_CARBONCORE_LEGACY")
+set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} -DBUILDING_FOR_CARBONCORE_LEGACY")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -nostdlib")
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/Source)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../libc/darwin)
+add_definitions(-DPRIVATE)
+
+# The Intel and the ARM slices are built from different sources (libm_intel_sources and
+# libm_arm_sources below), with their own headers and options, which libm_setup_family() gives a
+# target of one slice.
+function(libm_setup_family target family)
+	if (family STREQUAL "x86")
+		target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source/Intel)
+		target_compile_definitions(${target} PRIVATE movsxw=movsw)
+		target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C>:-msse -msse2 -msse3>)
+	else ()
+		target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source/ARM)
+		target_compile_definitions(${target} PRIVATE ARMLIBM_FENV_SUPPORT)
+	endif ()
+endfunction()
+
+set(libm_sources
+	Source/abs.c
+	Source/sincos.c
+	Source/exp10.c
+	Source/simd_invert.c
+	Source/simd_identity.c
+	#Source/nan.c
+	#Source/nanl.c
+	#Source/version_info.c
+)
+set_source_files_properties(Source/sincos.c PROPERTIES COMPILE_FLAGS "-fno-builtin")
+# pow(10, x) is otherwise folded into __exp10, the very function being defined
+set_source_files_properties(Source/exp10.c PROPERTIES COMPILE_FLAGS "-fno-builtin")
+
+# The sources of the Intel slices (i386, x86_64)
+set(libm_intel_sources
+		Source/Intel/acos.c
+		Source/Intel/asin.c
+		Source/Intel/atan.c
+		Source/Intel/complex.c
+		Source/Intel/containsNothingIntel.c
+		Source/Intel/e_acosh.c
+		Source/Intel/e_atanh.c
+		Source/Intel/e_cosh.c
+		Source/Intel/e_j0.c
+		Source/Intel/e_j1.c
+		Source/Intel/e_jn.c
+		Source/Intel/e_sinh.c
+		Source/Intel/expf_logf_powf.c
+		Source/Intel/fenv.c
+		Source/Intel/fmaf.c
+		Source/Intel/nan.c
+		Source/Intel/nanl.c
+		Source/Intel/rndtol.c
+		Source/Intel/s_asinh.c
+		Source/Intel/sincostan.c
+		Source/Intel/s_matherr.c
+		Source/Intel/s_tanh.c
+		Source/Intel/xmm_arcsincostan.c
+		Source/Intel/xmm_erfgamma.c
+		Source/Intel/xmm_exp.c
+		Source/Intel/xmm_fma.c
+		Source/Intel/xmm_log.c
+		Source/Intel/xmm_misc.c
+		Source/Intel/xmm_nextafter.c
+		Source/Intel/xmm_power.c
+		Source/Intel/xmm_remainder.c
+		Source/Intel/xmm_sqrt.c
+
+		Source/Intel/acosf.S
+		Source/Intel/acoshf.S
+		Source/Intel/asinf.S
+		Source/Intel/asinhf.S
+		Source/Intel/atan2f.S
+		Source/Intel/atanf.S
+		Source/Intel/atanhf.S
+		Source/Intel/cbrtf.S
+		Source/Intel/ceilf.S
+		Source/Intel/ceill.S
+		Source/Intel/ceil.S
+		Source/Intel/copysign.S
+		Source/Intel/coshf.S
+		Source/Intel/cosh.S
+		Source/Intel/e_acos.S
+		Source/Intel/e_asin.S
+		Source/Intel/e_atan2.S
+		Source/Intel/e_cbrtl.S
+		Source/Intel/e_exp.S
+		Source/Intel/e_log10.S
+		Source/Intel/e_log.S
+		Source/Intel/e_remainder.S
+		#Source/Intel/e_remquol.S
+		Source/Intel/e_sqrt.S
+		Source/Intel/exp2f.S
+		Source/Intel/exp2.S
+		Source/Intel/expf.S
+		Source/Intel/expl.S
+		Source/Intel/expm1f.S
+		Source/Intel/expm1.S
+		Source/Intel/exp.S
+		Source/Intel/floorf.S
+		Source/Intel/floorl.S
+		Source/Intel/floor.S
+		Source/Intel/fmaxfminfdim.S
+		Source/Intel/fmod.S
+		Source/Intel/frexp.S
+		Source/Intel/fyl2x.S
+		Source/Intel/hypotf.S
+		Source/Intel/hypotl.S
+		Source/Intel/hypot.S
+		Source/Intel/ilogb.S
+		Source/Intel/log10f.S
+		Source/Intel/log2f.S
+		Source/Intel/log2.S
+		Source/Intel/logf.S
+		# log.S provides double log2 (BASE2) when built with BUILDING_FOR_CARBONCORE_LEGACY
+		Source/Intel/log.S
+		Source/Intel/lrintl.S
+		Source/Intel/lroundf.S
+		Source/Intel/lroundl.S
+		Source/Intel/lround.S
+		Source/Intel/modff.S
+		Source/Intel/modfl.S
+		Source/Intel/modf.S
+		Source/Intel/nearbyintf.S
+		Source/Intel/nearbyintl.S
+		Source/Intel/nearbyint.S
+		Source/Intel/nextafterf.S
+		Source/Intel/nextafterl.S
+		Source/Intel/nextafter.S
+		#Source/Intel/powf.S
+		Source/Intel/rintf.S
+		Source/Intel/rintl.S
+		Source/Intel/rint.S
+		Source/Intel/roundf.S
+		Source/Intel/roundl.S
+		Source/Intel/round.S
+		Source/Intel/s_atan.S
+		Source/Intel/scalbnf.S
+		Source/Intel/scalbnl.S
+		Source/Intel/scalbn.S
+		Source/Intel/s_cosisin.S
+		Source/Intel/s_cos.S
+		#Source/Intel/s_ilogb.S
+		Source/Intel/sinfcosf.S
+		Source/Intel/sinhf.S
+		Source/Intel/sinh.S
+		Source/Intel/s_log1p.S
+		#Source/Intel/s_logb.S
+		Source/Intel/s_rint.S
+		#Source/Intel/s_significand.S
+		Source/Intel/s_sin.S
+		Source/Intel/s_tan.S
+		Source/Intel/tanf.S
+		Source/Intel/tanhf.S
+		Source/Intel/tanh.S
+		Source/Intel/truncf.S
+		Source/Intel/truncl.S
+		Source/Intel/trunc.S
+	)
+
+	# ARM64 / arm64e libm sources.
+	#
+	# Most transcendentals come from FreeBSD msun (also the basis of openlibm).
+	# Two filename conventions coexist, by design:
+	#   * `*_freeBSD.c`  — files that were already present under this name in
+	#                      the baseline ARM port; kept verbatim to preserve
+	#                      git history and avoid churn.
+	#   * `e_*.c / s_*.c / k_*.c` — newly-ported openlibm sources, named with
+	#                      their canonical fdlibm/openlibm filename (the same
+	#                      convention Source/Intel uses for its C files), so a
+	#                      future openlibm bump is a mechanical diff.
+	#
+	# Hardware-accelerated wrappers (FSQRT, FRINT*, FCVT*, FABS, FMIN/MAX,
+	# FMADD, copysign via BSL/BIT) live in `arm64_builtins.c` — and only the
+	# wrappers whose __builtin_ actually lowers to an instruction. Builtins
+	# like __builtin_sin/__builtin_pow that reduce back to a libm call are
+	# NOT used here (they would self-recurse).
+	set(libm_arm_sources
+		# transcendentals — double and float
+		Source/ARM/acos_freeBSD.c
+		Source/ARM/acosf_freeBSD.c
+		Source/ARM/acosh_freeBSD.c
+		Source/ARM/acoshf_freeBSD.c
+		Source/ARM/asin_freeBSD.c
+		Source/ARM/asinf_freeBSD.c
+		Source/ARM/asinh_freeBSD.c
+		Source/ARM/asinhf_freeBSD.c
+		Source/ARM/s_atan.c
+		Source/ARM/e_atan2.c
+		Source/ARM/e_atan2f.c
+		Source/ARM/s_atanf.c
+		Source/ARM/atanh_freeBSD.c
+		Source/ARM/atanhf_freeBSD.c
+		Source/ARM/cbrt.c
+		Source/ARM/s_cbrtf.c
+		Source/ARM/cosh_freeBSD.c
+		Source/ARM/coshf_freeBSD.c
+		Source/ARM/exp_freeBSD.c
+		Source/ARM/expf_freeBSD.c
+		Source/ARM/exp2_freeBSD.c
+		Source/ARM/exp2f_freeBSD.c
+		Source/ARM/expm1_freeBSD.c
+		Source/ARM/expm1f_freeBSD.c
+		# fma / fmaf now come from arm64_builtins.c (__builtin_fma → FMADD).
+		# Source/ARM/fma_freeBSD.c was a software Dekker fallback for targets
+		# without hardware FMA; ARM64 always has FMADD so we drop it.
+		Source/ARM/fmod_freeBSD.c
+		Source/ARM/fmodf.c
+		Source/ARM/e_hypot.c
+		Source/ARM/e_hypotf.c
+		Source/ARM/log.c		# Apple: log10 + log1p (table-based)
+		Source/ARM/log_freeBSD.c
+		Source/ARM/logf_freeBSD.c
+		Source/ARM/log2_freeBSD.c
+		Source/ARM/log10f_freeBSD.c
+		Source/ARM/log2f_freeBSD.c
+		Source/ARM/log1pf_freeBSD.c
+		Source/ARM/e_pow.c
+		Source/ARM/e_powf.c
+		Source/ARM/sinh_freeBSD.c
+		Source/ARM/sinhf_freeBSD.c
+		Source/ARM/s_sin.c
+		Source/ARM/s_cos.c
+		Source/ARM/s_tan.c
+		Source/ARM/s_sinf.c
+		Source/ARM/s_cosf.c
+		Source/ARM/s_tanf.c
+		Source/ARM/tanh_freeBSD.c
+		Source/ARM/tanhf_freeBSD.c
+		# bessel / gamma / error
+		Source/ARM/erf.c
+		Source/ARM/erfc.c
+		Source/ARM/erfcf.c
+		Source/ARM/erff.c
+		Source/ARM/j0y0_freeBSD.c
+		Source/ARM/j1y1_freeBSD.c
+		Source/ARM/jnyn_freeBSD.c
+		Source/ARM/lgamma.c
+		Source/ARM/lgammaf.c
+		Source/ARM/tgamma.c
+		Source/ARM/tgammaf.c
+		Source/ARM/signgam.c
+		# remquo / fdim / nextafter / ilogb / scalb / modf / frexp / round / ldexp
+		Source/ARM/fdim.c
+		Source/ARM/fdimf.c
+		Source/ARM/s_frexp.c
+		Source/ARM/s_frexpf.c
+		Source/ARM/ilogb.c
+		Source/ARM/ilogbf.c
+		Source/ARM/s_ldexp.c
+		Source/ARM/s_ldexpf.c
+		Source/ARM/logb.c
+		Source/ARM/logbf.c
+		Source/ARM/s_modf.c
+		Source/ARM/s_modff.c
+		Source/ARM/nextafter.c
+		Source/ARM/nextafterf.c
+		Source/ARM/nexttoward.c
+		Source/ARM/nexttowardf.c
+		Source/ARM/remainder.c
+		Source/ARM/remainderf.c
+		Source/ARM/remquo.c
+		Source/ARM/remquof.c
+		# round / roundf now come from arm64_builtins.c (__builtin_round →
+		# FRINTA, verified at clang -O2 to be a single hardware instruction).
+		Source/ARM/scalb.c
+		Source/ARM/scalbln.c
+		Source/ARM/scalblnf.c
+		# argument-reduction kernels
+		Source/ARM/e_rem_pio2_freeBSD.c
+		Source/ARM/e_rem_pio2f_freeBSD.c
+		Source/ARM/k_rem_pio2_freeBSD.c
+		Source/ARM/k_cos.c
+		Source/ARM/k_cosf.c
+		Source/ARM/k_sin.c
+		Source/ARM/k_sinf.c
+		Source/ARM/k_tan_freeBSD.c
+		Source/ARM/k_tanf_freeBSD.c
+		Source/ARM/k_exp.c
+		Source/ARM/k_expf.c
+		# misc / classification / fenv
+		# fpclassify[f].c superseded by arm64_classify.c (__builtin_fpclassify).
+		# fegetfltrounds.c superseded by the __fegetfltrounds entry in fenv.c.
+		# fmaf.c superseded by arm64_builtins.c (__builtin_fmaf → FMADD).
+		Source/ARM/math_errhandling.c
+		Source/ARM/nan.c
+		Source/ARM/fenv.c
+		Source/ARM/complex.c
+		Source/ARM/containsNothing.c
+		# private libm-internal compiler-rt shim for complex multiply.
+		# Hidden visibility so it doesn't pollute the public symbol table
+		# (see comment in arm64_complex_helpers.c for the rationale).
+		Source/ARM/arm64_complex_helpers.c
+		# ARM64 hardware-accelerated wrappers (FSQRT, FRINT*, FCVT*, FMADD,
+		# copysign SIMD) — each __builtin_* verified at -O2 to lower to
+		# hardware. Self-recursing builtins (sin, exp, log, ...) are NOT here.
+		Source/ARM/arm64_builtins.c
+		# math.h classification family backings (___isnan, ___isinf, ...,
+		# ___fpclassify variants) implemented via clang predicate builtins.
+		Source/ARM/arm64_classify.c
+		# Legacy BSD / SVID / Apple Classic <fp.h> wrappers (finite, matherr,
+		# rinttol, roundtol, significand, __inf, __inff, __nan).
+		Source/ARM/arm64_misc.c
+		# ___Libm_version stamp.
+		Source/ARM/version_info.c
+	)
+
+
+# Gross hack to rename symbols in $fenv_access_off variants
+set(CMAKE_AR "${CMAKE_CURRENT_SOURCE_DIR}/rename_wrapper")
+
+# One object library per slice, system_m_<arch>, with the sources of its family (and, for the Intel
+# slices, system_m_extra_<arch>, built without BUILDING_FOR_CARBONCORE_LEGACY)
+set(libm_arch_objects "")
+set(libm_intel_archs "")
+set(libm_arm_archs "")
+foreach (arch IN LISTS DARLING_ARCHS)
+	darling_arch_family(${arch} family)
+	if (family STREQUAL "x86")
+		add_darling_object_library(system_m_${arch} ARCHS ${arch} SOURCES ${libm_sources} ${libm_intel_sources})
+		add_darling_object_library(system_m_extra_${arch} ARCHS ${arch} SOURCES
+			Source/Intel/xmm_misc.c Source/Intel/xmm_log.c Source/Intel/fmaxfminfdim.S
+			Source/Intel/nextafter.S Source/Intel/xmm_remainder.c Source/Intel/e_remquol.S)
+		set_property(TARGET system_m_extra_${arch} APPEND_STRING PROPERTY
+			COMPILE_FLAGS " -UBUILDING_FOR_CARBONCORE_LEGACY -O0 -ggdb")
+		libm_setup_family(system_m_extra_${arch} ${family})
+		list(APPEND libm_arch_objects $<TARGET_OBJECTS:system_m_extra_${arch}>)
+		list(APPEND libm_intel_archs ${arch})
+	elseif (family STREQUAL "arm")
+		add_darling_object_library(system_m_${arch} ARCHS ${arch} SOURCES ${libm_sources} ${libm_arm_sources})
+		list(APPEND libm_arm_archs ${arch})
+	else ()
+		message(FATAL_ERROR "libm: no sources for the ${arch} slice")
+	endif ()
+	libm_setup_family(system_m_${arch} ${family})
+	list(APPEND libm_arch_objects $<TARGET_OBJECTS:system_m_${arch}>)
+endforeach ()
+
+set(DYLIB_INSTALL_NAME "/usr/lib/system/libsystem_m.dylib")
+# The export aliases of each family
+darling_xarch_flags(LIBM_INTEL_ALIAS_FLAGS ARCHS ${libm_intel_archs} OPTIONS
+	"-Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/Exports/libm_Intel.a.alias"
+	"-Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/Exports/libmathCommonIntel.alias")
+darling_xarch_flags(LIBM_ARM_ALIAS_FLAGS ARCHS ${libm_arm_archs} OPTIONS
+	"-Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/Exports/libm_arm_vfp.a.alias")
+set(LIBM_LINK_FLAGS "${LIBM_INTEL_ALIAS_FLAGS} ${LIBM_ARM_ALIAS_FLAGS}")
+list(LENGTH DARLING_ARCHS libm_arch_count)
+if (libm_arch_count GREATER 1)
+	# Each slice's link gets the objects of the other slices too, which it skips
+	string(APPEND LIBM_LINK_FLAGS " -Wl,-no_arch_warnings")
+endif ()
+add_circular(system_m FAT
+	OBJECTS
+		${libm_arch_objects}
+	SIBLINGS
+		system_c
+		compiler_rt
+		system_dyld
+	LINK_FLAGS
+		"${LIBM_LINK_FLAGS}"
+)
+#set_property(TARGET system_m APPEND_STRING PROPERTY LINK_FLAGS
+#	"-Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/Exports/libm_Intel.a.alias -Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/Exports/libmathCommonIntel.alias")
+#target_link_libraries(system_m)
+#make_fat(system_m)
+
+install(TARGETS system_m DESTINATION libexec/darling/usr/lib/system)
+
+set(CMAKE_AR "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ar")
+set(CMAKE_RANLIB "${CMAKE_BINARY_DIR}/src/external/cctools-port/cctools/ar/${APPLE_TARGET_TRIPLET_PRIMARY}-ranlib")
+# One archive per slice, joined into system_m_static with lipo
+foreach (arch IN LISTS DARLING_ARCHS)
+	set(libm_static_objects $<TARGET_OBJECTS:system_m_${arch}>)
+	if (TARGET system_m_extra_${arch})
+		list(APPEND libm_static_objects $<TARGET_OBJECTS:system_m_extra_${arch}>)
+	endif ()
+	add_darling_static_library(system_m_static_${arch} ARCHS ${arch} SOURCES ${libm_static_objects})
+endforeach ()
+darling_lipo_static_library_slices(system_m_static ${DARLING_ARCHS})
+
+# Host-side check of the long double signbit helper in the SDK math.h
+add_test(NAME libm_signbit_header
+	COMMAND ${CMAKE_COMMAND}
+		-DCOMPILER=${CMAKE_C_COMPILER}
+		-DSDK=${CMAKE_SOURCE_DIR}/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+		-DPROBE=${CMAKE_SOURCE_DIR}/tests/libm/signbit_probe.c
+		-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/signbit_header
+		-P ${CMAKE_SOURCE_DIR}/tests/libm/signbit_header.cmake
+)
